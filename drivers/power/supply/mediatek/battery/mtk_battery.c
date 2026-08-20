@@ -537,8 +537,12 @@ static int battery_get_property(struct power_supply *psy,
 		val->intval = data->BAT_STATUS;
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
-		data->BAT_HEALTH = mmi_batt_health_check();
-		val->intval = data->BAT_HEALTH;/* do not change before*/
+		if (tb132fu_bq27541_get_property(psp, val)) {
+			data->BAT_HEALTH = mmi_batt_health_check();
+			val->intval = data->BAT_HEALTH;/* do not change before*/
+		} else {
+			data->BAT_HEALTH = val->intval;
+		}
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
 		if (tb132fu_bq27541_get_property(psp, val))
@@ -556,7 +560,8 @@ static int battery_get_property(struct power_supply *psy,
 			val->intval = prop.intval;
 		}
 #else
-		val->intval = gm.bat_cycle;
+		if (tb132fu_bq27541_get_property(psp, val))
+			val->intval = gm.bat_cycle;
 #endif
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:

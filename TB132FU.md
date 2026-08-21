@@ -5,6 +5,19 @@ bring-up and Android compatibility work. The current boot-validated source
 checkpoint is Linux 4.19.325-cip135-st19 with the TB132FU vendor hardware
 support retained.
 
+## Pure Pixel 17 R2 checkpoint
+
+Pure Pixel 17 R2 uses kernel build 14 from commit `f766d4120417b`. It is the
+accepted R1 kernel #13 plus a focused power-supply change that reports battery
+health and charge cycles from the tablet's BQ27541 fuel gauge. The existing
+MediaTek gauge remains the fallback. Charging policy, capacity, suspend
+behavior, configuration, module ABI, and the `4.19.325-cip135-st19+` release
+baseline are unchanged.
+
+The R2 candidate physically reported a valid battery condition and nonzero
+cycle count while retaining the accepted boot, charging, suspend/wake, and
+hardware behavior.
+
 ## Pure Pixel 17 R1 checkpoint
 
 The Android 17 R1 release uses kernel build 13 from immutable implementation
@@ -31,6 +44,7 @@ tablet has not completed the same physical qualification matrix.
 
 | Tag | Kernel | Status |
 | --- | --- | --- |
+| R2 branch `purepixel17-tb132fu-r2-kernel` | 4.19.325-cip135-st19 | Android 17 R2 kernel build 14 |
 | `tb132fu-purepixel17-r1-k13` | 4.19.325-cip135-st19 | Android 17 R1 kernel build 13 |
 | `tb132fu-v84-4.19.325-cip135` | 4.19.325-cip135-st19 | Earlier Android 16 checkpoint |
 | `tb132fu-v83-4.19.325` | 4.19.325 | Known-good rollback checkpoint |

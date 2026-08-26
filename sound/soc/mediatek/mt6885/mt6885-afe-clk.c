@@ -7,6 +7,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 #include <linux/arm-smccc.h> /* for Kernel Native SMC API */
@@ -16,6 +17,31 @@
 #include "mt6885-afe-clk.h"
 
 static DEFINE_MUTEX(mutex_request_dram);
+
+/* Temporary, read-only TB132FU I2S4 clock diagnostics. */
+static unsigned int tb132fu_i2s4_mck_requested;
+static unsigned int tb132fu_i2s4_mck_actual;
+static unsigned int tb132fu_i2s4_mck_parent;
+static unsigned int tb132fu_i2s4_bck_requested;
+static unsigned int tb132fu_i2s4_bck_actual;
+static unsigned int tb132fu_i2s4_bck_parent;
+static unsigned int tb132fu_auddiv_0;
+static unsigned int tb132fu_auddiv_2;
+
+module_param_named(tb132fu_i2s4_mck_requested,
+		   tb132fu_i2s4_mck_requested, uint, 0444);
+module_param_named(tb132fu_i2s4_mck_actual,
+		   tb132fu_i2s4_mck_actual, uint, 0444);
+module_param_named(tb132fu_i2s4_mck_parent,
+		   tb132fu_i2s4_mck_parent, uint, 0444);
+module_param_named(tb132fu_i2s4_bck_requested,
+		   tb132fu_i2s4_bck_requested, uint, 0444);
+module_param_named(tb132fu_i2s4_bck_actual,
+		   tb132fu_i2s4_bck_actual, uint, 0444);
+module_param_named(tb132fu_i2s4_bck_parent,
+		   tb132fu_i2s4_bck_parent, uint, 0444);
+module_param_named(tb132fu_auddiv_0, tb132fu_auddiv_0, uint, 0444);
+module_param_named(tb132fu_auddiv_2, tb132fu_auddiv_2, uint, 0444);
 
 static const char *aud_clks[CLK_NUM] = {
 	[CLK_AFE] = "aud_afe_clk",
@@ -731,6 +757,22 @@ int mt6885_mck_enable(struct mtk_base_afe *afe, int mck_id, int rate)
 			rate, ret);
 		return ret;
 	}
+
+	if (mck_id == MT6885_I2S4_MCK) {
+		tb132fu_i2s4_mck_requested = rate;
+		tb132fu_i2s4_mck_actual =
+			clk_get_rate(afe_priv->clk[div_clk_id]);
+		tb132fu_i2s4_mck_parent = clk_get_rate(
+			clk_get_parent(afe_priv->clk[div_clk_id]));
+	} else if (mck_id == MT6885_I2S4_BCK) {
+		tb132fu_i2s4_bck_requested = rate;
+		tb132fu_i2s4_bck_actual =
+			clk_get_rate(afe_priv->clk[div_clk_id]);
+		tb132fu_i2s4_bck_parent = clk_get_rate(
+			clk_get_parent(afe_priv->clk[div_clk_id]));
+	}
+	regmap_read(afe_priv->topckgen, CLK_AUDDIV_0, &tb132fu_auddiv_0);
+	regmap_read(afe_priv->topckgen, CLK_AUDDIV_2, &tb132fu_auddiv_2);
 
 	/* below will be deprecated, i2s5 not full support by ccf now */
 	if (mck_id != MT6885_I2S5_MCK)

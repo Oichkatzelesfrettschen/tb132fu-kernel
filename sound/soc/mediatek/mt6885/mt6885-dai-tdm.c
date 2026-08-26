@@ -7,10 +7,31 @@
  */
 
 #include <linux/regmap.h>
+#include <linux/module.h>
 #include <sound/pcm_params.h>
 #include "mt6885-afe-clk.h"
 #include "mt6885-afe-common.h"
 #include "mt6885-interconnection.h"
+
+/* Temporary, read-only TB132FU DPTX clock diagnostics. */
+static unsigned int tb132fu_dptx_rate;
+static unsigned int tb132fu_dptx_channels;
+static unsigned int tb132fu_dptx_format;
+static unsigned int tb132fu_dptx_mclk_requested;
+static unsigned int tb132fu_dptx_bck_requested;
+static unsigned int tb132fu_dptx_tdm_con1;
+static unsigned int tb132fu_dptx_con;
+
+module_param_named(tb132fu_dptx_rate, tb132fu_dptx_rate, uint, 0444);
+module_param_named(tb132fu_dptx_channels, tb132fu_dptx_channels, uint, 0444);
+module_param_named(tb132fu_dptx_format, tb132fu_dptx_format, uint, 0444);
+module_param_named(tb132fu_dptx_mclk_requested,
+		   tb132fu_dptx_mclk_requested, uint, 0444);
+module_param_named(tb132fu_dptx_bck_requested,
+		   tb132fu_dptx_bck_requested, uint, 0444);
+module_param_named(tb132fu_dptx_tdm_con1,
+		   tb132fu_dptx_tdm_con1, uint, 0444);
+module_param_named(tb132fu_dptx_con, tb132fu_dptx_con, uint, 0444);
 
 struct mtk_afe_tdm_priv {
 	int bck_id;
@@ -616,6 +637,14 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 
 	/* set dptx */
 	if (tdm_id == MT6885_DAI_TDM_DPTX) {
+		tb132fu_dptx_rate = rate;
+		tb132fu_dptx_channels = channels;
+		tb132fu_dptx_format = format;
+		tb132fu_dptx_mclk_requested = tdm_priv->mclk_rate;
+		tb132fu_dptx_bck_requested = tdm_priv->bck_rate;
+		regmap_read(afe->regmap, AFE_TDM_CON1,
+			    &tb132fu_dptx_tdm_con1);
+
 		regmap_update_bits(afe->regmap, AFE_DPTX_CON,
 				   DPTX_CHANNEL_ENABLE_MASK_SFT,
 				   get_dptx_ch_enable_mask(channels) <<
@@ -627,9 +656,7 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 		regmap_update_bits(afe->regmap, AFE_DPTX_CON,
 				   DPTX_16_BIT_MASK_SFT,
 				   get_dptx_wlen(format) << DPTX_16_BIT_SFT);
-
-		/* Preserve the TB132FU DPTX TDM bit-clock polarity. */
-		regmap_write(afe->regmap, AUDIO_TOP_CON3, 0x6000000c);
+		regmap_read(afe->regmap, AFE_DPTX_CON, &tb132fu_dptx_con);
 	} else {
 		switch (channels) {
 		case 1:

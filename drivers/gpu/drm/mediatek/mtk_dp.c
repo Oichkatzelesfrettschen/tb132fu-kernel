@@ -3431,6 +3431,16 @@ static enum drm_mode_status mtk_dp_conn_mode_valid(struct drm_connector *conn,
 		mode->hdisplay, mode->vdisplay, mode->vrefresh, mode->clock,
 		bandwidth, dp_plat_limit[0].valid);
 
+	/*
+	 * TB132FU's legacy external-display pipeline is not stable at 4K: the
+	 * 30 Hz mode visibly flickers during composition and the 60 Hz path is
+	 * outside the qualified bandwidth.  get_modes() supplies a known-good
+	 * 1080p60 fallback for 4K-capable sinks, so reject both 4K timings here
+	 * instead of allowing the legacy HWC to select the sink's 4K default.
+	 */
+	if (mode->hdisplay == 3840 && mode->vdisplay == 2160)
+		return MODE_CLOCK_HIGH;
+
 	if (mode->clock > (dp_plat_limit[0].clock + 50000))
 		return MODE_CLOCK_HIGH;
 	if (mode->clock < (dp_plat_limit[plat_limit_array-1].clock - 5000))

@@ -62,7 +62,7 @@ static const struct drm_display_mode dptx_est_modes[] = {
 		DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC), .vrefresh = 30, },
 	/* 1080x1920@60Hz */
 	{ DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
-		148500, 1920, 1940, 1940, 1980, 0, 1080, 1120, 1120, 1220, 0,
+		148500, 1920, 2008, 2052, 2200, 0, 1080, 1084, 1089, 1125, 0,
 		DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC), .vrefresh = 60,},
 	/* 1280x720@60Hz */
 	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1300, 1300,
@@ -3279,9 +3279,10 @@ static const struct drm_connector_funcs mtk_dp_connector_funcs = {
 static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 {
 	struct mtk_dp *mtk_dp = mtk_dp_ctx_from_conn(conn);
-	int ret;
+	int ret = 0;
 	struct drm_display_mode *mode;
 	struct drm_device *dev = conn->dev;
+	bool has_1080p60 = false;
 
 	DPTXFUNC("fakecablein %d, res %d\n", fakecablein, fakeres);
 	if (fakecablein) {
@@ -3318,14 +3319,39 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 			mtk_dp->edid);
 		ret = drm_add_edid_modes(&mtk_dp->conn, mtk_dp->edid);
 		DPTXMSG("%s modes = %d\n", __func__, ret);
-		if (ret)
-			return ret;
 	} else {
 		drm_connector_update_edid_property(&mtk_dp->conn, NULL);
 		DPTXMSG("%s NULL EDID\n", __func__);
 	}
 
-	return 0;
+	list_for_each_entry(mode, &conn->probed_modes, head) {
+		if (mode->hdisplay == 1920 && mode->vdisplay == 1080 &&
+		    abs(drm_mode_vrefresh(mode) - 60) <= 1) {
+			has_1080p60 = true;
+			break;
+		}
+	}
+
+	/*
+	 * Some USB-C adapters used with TB132FU expose only their highest
+	 * 4K30 mode through EDID.  Keep that mode, but also advertise the
+	 * transmitter's natively supported CEA-861 1080p60 timing so Android
+	 * can select the lower-bandwidth mode.  Do not override an equivalent
+	 * sink-provided mode or make the fallback preferred.
+	 */
+	if (!has_1080p60) {
+		mode = drm_mode_duplicate(dev, &dptx_est_modes[2]);
+		if (mode) {
+			drm_mode_set_name(mode);
+			mode->type = DRM_MODE_TYPE_DRIVER;
+			drm_mode_probed_add(conn, mode);
+			ret++;
+			DPTXMSG("%s appended 1920x1080@60 fallback\n",
+				 __func__);
+		}
+	}
+
+	return ret;
 }
 
 struct drm_display_limit_mode {

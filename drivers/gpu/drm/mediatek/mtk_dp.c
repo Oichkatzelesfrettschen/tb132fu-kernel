@@ -3281,8 +3281,11 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 	struct mtk_dp *mtk_dp = mtk_dp_ctx_from_conn(conn);
 	int ret = 0;
 	struct drm_display_mode *mode;
+	struct drm_display_mode *preferred_mode = NULL;
 	struct drm_device *dev = conn->dev;
 	bool has_1080p60 = false;
+	bool has_720p60 = false;
+	bool has_1080p_or_larger = false;
 
 	DPTXFUNC("fakecablein %d, res %d\n", fakecablein, fakeres);
 	if (fakecablein) {
@@ -3325,33 +3328,52 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 	}
 
 	list_for_each_entry(mode, &conn->probed_modes, head) {
-		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
 		if (mode->hdisplay == 1920 && mode->vdisplay == 1080 &&
 		    abs(drm_mode_vrefresh(mode) - 60) <= 1) {
-			mode->type |= DRM_MODE_TYPE_PREFERRED;
+			preferred_mode = mode;
 			has_1080p60 = true;
 		}
+		if (mode->hdisplay == 1280 && mode->vdisplay == 720 &&
+		    abs(drm_mode_vrefresh(mode) - 60) <= 1)
+			has_720p60 = true;
+		if (mode->hdisplay >= 1920 && mode->vdisplay >= 1080)
+			has_1080p_or_larger = true;
 	}
 
 	/*
-	 * Some USB-C adapters used with TB132FU expose only their highest
-	 * 4K30 mode through EDID.  Keep that mode, but also advertise the
-	 * transmitter's natively supported CEA-861 1080p60 timing so Android
-	 * can use the lower-bandwidth mode.  The legacy MediaTek HWC publishes
-	 * only the connector's preferred mode to SurfaceFlinger, so make the
-	 * 1080p60 timing preferred while retaining the sink's other modes.
+	 * The legacy MediaTek HWC publishes only the connector's preferred mode
+	 * to SurfaceFlinger.  Prefer an EDID-advertised CEA 1080p60 mode.  Some
+	 * USB-C adapters expose only their highest 4K30 mode, so add the
+	 * transmitter's known-good 1080p60 timing only for a sink which already
+	 * advertises a 1080p-or-larger mode.  Never force 1080p onto a 720p-only
+	 * sink: in that case prefer its advertised 720p60 mode.  If none of these
+	 * cases applies, preserve the sink's original preferred mode unchanged.
 	 */
-	if (!has_1080p60) {
+	if (!has_1080p60 && has_1080p_or_larger) {
 		mode = drm_mode_duplicate(dev, &dptx_est_modes[2]);
 		if (mode) {
 			drm_mode_set_name(mode);
-			mode->type = DRM_MODE_TYPE_DRIVER |
-				DRM_MODE_TYPE_PREFERRED;
+			mode->type = DRM_MODE_TYPE_DRIVER;
 			drm_mode_probed_add(conn, mode);
+			preferred_mode = mode;
 			ret++;
 			DPTXMSG("%s appended 1920x1080@60 fallback\n",
 				 __func__);
 		}
+	} else if (!has_1080p60 && has_720p60) {
+		list_for_each_entry(mode, &conn->probed_modes, head) {
+			if (mode->hdisplay == 1280 && mode->vdisplay == 720 &&
+			    abs(drm_mode_vrefresh(mode) - 60) <= 1) {
+				preferred_mode = mode;
+				break;
+			}
+		}
+	}
+
+	if (preferred_mode) {
+		list_for_each_entry(mode, &conn->probed_modes, head)
+			mode->type &= ~DRM_MODE_TYPE_PREFERRED;
+		preferred_mode->type |= DRM_MODE_TYPE_PREFERRED;
 	}
 
 	return ret;

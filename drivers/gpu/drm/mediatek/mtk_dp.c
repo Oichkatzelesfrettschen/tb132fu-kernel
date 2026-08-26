@@ -3325,10 +3325,11 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 	}
 
 	list_for_each_entry(mode, &conn->probed_modes, head) {
+		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
 		if (mode->hdisplay == 1920 && mode->vdisplay == 1080 &&
 		    abs(drm_mode_vrefresh(mode) - 60) <= 1) {
+			mode->type |= DRM_MODE_TYPE_PREFERRED;
 			has_1080p60 = true;
-			break;
 		}
 	}
 
@@ -3336,14 +3337,16 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 	 * Some USB-C adapters used with TB132FU expose only their highest
 	 * 4K30 mode through EDID.  Keep that mode, but also advertise the
 	 * transmitter's natively supported CEA-861 1080p60 timing so Android
-	 * can select the lower-bandwidth mode.  Do not override an equivalent
-	 * sink-provided mode or make the fallback preferred.
+	 * can use the lower-bandwidth mode.  The legacy MediaTek HWC publishes
+	 * only the connector's preferred mode to SurfaceFlinger, so make the
+	 * 1080p60 timing preferred while retaining the sink's other modes.
 	 */
 	if (!has_1080p60) {
 		mode = drm_mode_duplicate(dev, &dptx_est_modes[2]);
 		if (mode) {
 			drm_mode_set_name(mode);
-			mode->type = DRM_MODE_TYPE_DRIVER;
+			mode->type = DRM_MODE_TYPE_DRIVER |
+				DRM_MODE_TYPE_PREFERRED;
 			drm_mode_probed_add(conn, mode);
 			ret++;
 			DPTXMSG("%s appended 1920x1080@60 fallback\n",

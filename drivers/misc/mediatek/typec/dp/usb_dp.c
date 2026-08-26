@@ -92,6 +92,38 @@ static int pi3dpx1205a_set_orientation(struct i2c_client *client,
 		TB132FU_DP_MUX_FLIPPED : TB132FU_DP_MUX_NORMAL);
 }
 
+/*
+ * Lenovo's TB132FU 4.14 driver writes the normal DP mapping immediately
+ * before synthesizing HPD when the sink did not generate an HPD event.  This
+ * looks redundant after the polarity notification, but it is part of the
+ * board's original PI3DPX1205A handoff and is required before AUX training is
+ * attempted.  Keep this scoped to the forced-HPD fallback so ordinary USB3
+ * orientation handling remains polarity aware.
+ */
+static int pi3dpx1205a_prepare_forced_hpd(struct i2c_client *client)
+{
+	int ret;
+	int config;
+
+	ret = pi3dpx1205a_write_config(client, TB132FU_DP_MUX_NORMAL);
+	if (ret < 0)
+		return ret;
+
+	config = pi3dpx1205a_read_config(client);
+	if (config < 0) {
+		usbc_dbg(K_ERR, "forced HPD mux readback failed: %d\n", config);
+		return config;
+	}
+
+	usbc_dbg(K_INFO, "forced HPD mux readback=0x%02x\n", config);
+	if (config != TB132FU_DP_MUX_NORMAL)
+		usbc_dbg(K_WARNIN,
+			 "forced HPD mux mismatch: expected=0x%02x actual=0x%02x\n",
+			 TB132FU_DP_MUX_NORMAL, config);
+
+	return 0;
+}
+
 static int pi3dpx1205a_init(struct i2c_client *client)
 {
 	int ret;
@@ -249,7 +281,13 @@ static struct i2c_driver usb_dp_driver = {
 static void check_hpd(struct work_struct *work)
 {
 	if (hdp_state == 0) {
-		usbc_dbg(K_INFO, "%s No HPD connection event", __func__);
+		int ret;
+
+		usbc_dbg(K_INFO, "%s No HPD connection event\n", __func__);
+		ret = pi3dpx1205a_prepare_forced_hpd(usbdp_client);
+		if (ret < 0)
+			usbc_dbg(K_ERR, "%s mux preparation failed: %d\n",
+				 __func__, ret);
 		mtk_dp_SWInterruptSet(0x4);
 		dp_sw_connect = true;
 	}

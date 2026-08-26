@@ -7,52 +7,10 @@
  */
 
 #include <linux/regmap.h>
-#include <linux/module.h>
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
 #include <sound/pcm_params.h>
 #include "mt6885-afe-clk.h"
 #include "mt6885-afe-common.h"
 #include "mt6885-interconnection.h"
-
-/* Temporary, read-only TB132FU DPTX clock diagnostics. */
-static unsigned int tb132fu_dptx_rate;
-static unsigned int tb132fu_dptx_channels;
-static unsigned int tb132fu_dptx_format;
-static unsigned int tb132fu_dptx_mclk_requested;
-static unsigned int tb132fu_dptx_bck_requested;
-static unsigned int tb132fu_dptx_tdm_con1;
-static unsigned int tb132fu_dptx_con;
-
-module_param_named(tb132fu_dptx_rate, tb132fu_dptx_rate, uint, 0444);
-module_param_named(tb132fu_dptx_channels, tb132fu_dptx_channels, uint, 0444);
-module_param_named(tb132fu_dptx_format, tb132fu_dptx_format, uint, 0444);
-module_param_named(tb132fu_dptx_mclk_requested,
-		   tb132fu_dptx_mclk_requested, uint, 0444);
-module_param_named(tb132fu_dptx_bck_requested,
-		   tb132fu_dptx_bck_requested, uint, 0444);
-module_param_named(tb132fu_dptx_tdm_con1,
-		   tb132fu_dptx_tdm_con1, uint, 0444);
-module_param_named(tb132fu_dptx_con, tb132fu_dptx_con, uint, 0444);
-
-static int tb132fu_dptx_config_proc_show(struct seq_file *m, void *v)
-{
-	seq_printf(m,
-		   "rate=%u\nchannels=%u\nformat=%u\nmclk_requested=%u\n"
-		   "bck_requested=%u\ntdm_con1=0x%08x\ndptx_con=0x%08x\n",
-		   tb132fu_dptx_rate, tb132fu_dptx_channels,
-		   tb132fu_dptx_format, tb132fu_dptx_mclk_requested,
-		   tb132fu_dptx_bck_requested, tb132fu_dptx_tdm_con1,
-		   tb132fu_dptx_con);
-	return 0;
-}
-
-static int __init tb132fu_dptx_config_proc_init(void)
-{
-	return proc_create_single("tb132fu_dptx_config", 0444, NULL,
-				  tb132fu_dptx_config_proc_show) ? 0 : -ENOMEM;
-}
-late_initcall(tb132fu_dptx_config_proc_init);
 
 struct mtk_afe_tdm_priv {
 	int bck_id;
@@ -658,14 +616,6 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 
 	/* set dptx */
 	if (tdm_id == MT6885_DAI_TDM_DPTX) {
-		tb132fu_dptx_rate = rate;
-		tb132fu_dptx_channels = channels;
-		tb132fu_dptx_format = format;
-		tb132fu_dptx_mclk_requested = tdm_priv->mclk_rate;
-		tb132fu_dptx_bck_requested = tdm_priv->bck_rate;
-		regmap_read(afe->regmap, AFE_TDM_CON1,
-			    &tb132fu_dptx_tdm_con1);
-
 		regmap_update_bits(afe->regmap, AFE_DPTX_CON,
 				   DPTX_CHANNEL_ENABLE_MASK_SFT,
 				   get_dptx_ch_enable_mask(channels) <<
@@ -677,13 +627,6 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 		regmap_update_bits(afe->regmap, AFE_DPTX_CON,
 				   DPTX_16_BIT_MASK_SFT,
 				   get_dptx_wlen(format) << DPTX_16_BIT_SFT);
-		regmap_read(afe->regmap, AFE_DPTX_CON, &tb132fu_dptx_con);
-		dev_warn(afe->dev,
-			 "TB132FU_DPTX_CFG rate=%u channels=%u format=%u mclk=%u bck=%u tdm=0x%08x dptx=0x%08x\n",
-			 tb132fu_dptx_rate, tb132fu_dptx_channels,
-			 tb132fu_dptx_format, tb132fu_dptx_mclk_requested,
-			 tb132fu_dptx_bck_requested, tb132fu_dptx_tdm_con1,
-			 tb132fu_dptx_con);
 	} else {
 		switch (channels) {
 		case 1:

@@ -657,6 +657,12 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 				   DPTX_16_BIT_MASK_SFT,
 				   get_dptx_wlen(format) << DPTX_16_BIT_SFT);
 		regmap_read(afe->regmap, AFE_DPTX_CON, &tb132fu_dptx_con);
+		dev_warn(afe->dev,
+			 "TB132FU_DPTX_CFG rate=%u channels=%u format=%u mclk=%u bck=%u tdm=0x%08x dptx=0x%08x\n",
+			 tb132fu_dptx_rate, tb132fu_dptx_channels,
+			 tb132fu_dptx_format, tb132fu_dptx_mclk_requested,
+			 tb132fu_dptx_bck_requested, tb132fu_dptx_tdm_con1,
+			 tb132fu_dptx_con);
 	} else {
 		switch (channels) {
 		case 1:

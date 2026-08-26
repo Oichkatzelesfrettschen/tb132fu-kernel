@@ -773,6 +773,13 @@ int mt6885_mck_enable(struct mtk_base_afe *afe, int mck_id, int rate)
 	}
 	regmap_read(afe_priv->topckgen, CLK_AUDDIV_0, &tb132fu_auddiv_0);
 	regmap_read(afe_priv->topckgen, CLK_AUDDIV_2, &tb132fu_auddiv_2);
+	if (mck_id == MT6885_I2S4_MCK || mck_id == MT6885_I2S4_BCK)
+		dev_warn(afe->dev,
+			 "TB132FU_DPTX_CLK id=%d requested=%u actual=%lu parent=%lu auddiv0=0x%08x auddiv2=0x%08x\n",
+			 mck_id, rate,
+			 clk_get_rate(afe_priv->clk[div_clk_id]),
+			 clk_get_rate(clk_get_parent(afe_priv->clk[div_clk_id])),
+			 tb132fu_auddiv_0, tb132fu_auddiv_2);
 
 	/* below will be deprecated, i2s5 not full support by ccf now */
 	if (mck_id != MT6885_I2S5_MCK)

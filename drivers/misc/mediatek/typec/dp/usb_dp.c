@@ -33,7 +33,10 @@
 #define K_INFO		(1<<1)
 #define K_DEBUG	(1<<0)
 
-#define BYTE_SIZE 13
+#define TB132FU_DP_MUX_REG		0x06
+#define TB132FU_DP_MUX_SAFE		0xA8
+#define TB132FU_DP_MUX_NORMAL		0xFB
+#define TB132FU_DP_MUX_FLIPPED		0xFF
 
 #define usbc_dbg(level, fmt, args...) do { \
 		if (debug_level & level) { \
@@ -43,7 +46,6 @@
 
 static u32 debug_level = (255 - K_DEBUG);
 
-static u8 eq_fg_sw[8][6];
 static struct i2c_client *usbdp_client;
 static struct notifier_block dp_nb;
 static struct tcpc_device *dp_tcpc_dev;
@@ -54,225 +56,51 @@ static bool dp_sw_connect;
 static struct delayed_work check_wk;
 
 /*
- * Read PI3DPX1205A I2C reg from BYTE0 to BYTE len-1
- * return value: no of byte read
+ * TB132FU uses the PI3DPX1205A's Lenovo board interface: one control byte at
+ * register 0x06.  The donor 4.19 implementation treats this part as a
+ * thirteen-byte register block, which makes probe fail on the tablet and
+ * leaves 6-000a unbound.
  */
-static int pi3dpx1205a_readn(struct i2c_client *client, u8 len, u8 *val)
+static int pi3dpx1205a_read_config(struct i2c_client *client)
 {
-	usbc_dbg(K_INFO, "I2C readn : len=%u\n", len);
+	if (!client)
+		return -ENODEV;
 
-	if (!client) {
-		usbc_dbg(K_ERR, "Null client\n");
-		return -1;
-	}
-
-	//Read I2C Byte0 to Byte len-1
-	return i2c_smbus_read_i2c_block_data(client, 0, len, val);
+	return i2c_smbus_read_byte_data(client, TB132FU_DP_MUX_REG);
 }
 
-/*
- * Read PI3DPX1205A I2C reg Byte N
- * return value: Byte N
- * Max size : 13
- */
-static int pi3dpx1205a_read(struct i2c_client *client, u8 index)
+static int pi3dpx1205a_write_config(struct i2c_client *client, u8 value)
 {
-	u8 data[BYTE_SIZE];
-	int res;
+	int ret;
 
-	//Exceed BYTE definition
-	if ((index > BYTE_SIZE - 1) || (index < 0)) {
-		usbc_dbg(K_ERR, "%s Exceed BYTE definition\n", __func__);
-		return -1;
-	}
+	if (!client)
+		return -ENODEV;
 
-	//Read I2C Byte0 to Byte 12
-	res = pi3dpx1205a_readn(client, BYTE_SIZE, data);
+	ret = i2c_smbus_write_byte_data(client, TB132FU_DP_MUX_REG, value);
+	if (ret < 0)
+		usbc_dbg(K_ERR, "mux write 0x%02x failed: %d\n", value, ret);
+	else
+		usbc_dbg(K_INFO, "mux config=0x%02x\n", value);
 
-	if (res > 0)
-		return data[index];
-
-	return res;
+	return ret;
 }
 
-/*
- * Write PI3DPX1205A I2C reg from BYTE0 to BYTE len-1
- * return value: no of byte written
- */
-static int pi3dpx1205a_writen(struct i2c_client *client, u8 len, u8 *val)
+static int pi3dpx1205a_set_orientation(struct i2c_client *client,
+				       bool flipped)
 {
-	if (!client) {
-		usbc_dbg(K_ERR, "Null client\n");
-		return -1;
-	}
-
-	//Write I2C Byte0 to Byte len-1
-	if (len > 1)
-		return i2c_smbus_write_i2c_block_data(client,
-			val[0], len-1, val+1);
-
-	return i2c_smbus_write_byte(client, val[0]);
-}
-
-/*
- * Write PI3DPX1205A I2C reg Byte N
- * return value: no of byte written
- */
-int pi3dpx1205a_write(struct i2c_client *client, u8 index, u8 val)
-{
-	u8 data[BYTE_SIZE];
-	int res;
-
-	//Read I2C Byte0 to Byte N
-	res = pi3dpx1205a_readn(client, index+1, data);
-
-	if (res > 0)	{
-		data[index] = val;
-		return pi3dpx1205a_writen(client, index+1, data);
-	}
-
-	return res;
-}
-
-/*
- * Write PI3DPX1205A Byte 3 to set channel mapping control
- * input: conf
- * return value: no of byte written
- * 0000 Safe State
- * 0001 Safe State
- * 0010 4 lane DP1.4 + AUX
- * 0011 4 lane DP1.4 + AUX Flipped
- * 0100 1 lane USB3.x (AP_CH1)
- * 0101 1 lane USB3.x (AP_CH1) Flipped
- * 0110 USB3 (AP_CH1) + 2 lane DP1.4 (AP_CH2) + AUX
- * 0111 USB3 (AP_CH1) + 2 lane DP1.4 (AP_CH2) + AUX Flipped
- */
-int pi3dpx1205a_set_conf(struct i2c_client *client, u8 conf)
-{
-	//Read byte 3
-	int reg = pi3dpx1205a_read(client, 3);
-
-	if (reg < 0)
-		return -1;
-
-	reg &= 0x0F;
-	reg |= (conf << 4);
-
-	return pi3dpx1205a_write(client, 3, reg);
-}
-
-/*
- * Write PI3DPX1205A Byte 3 to enter safe state and
- * Byte 4 to Byte 8 and Byte 12 to set Equalization,
- * Flat gain, Swing and features.
- * return -1 if fail
- * input: conf
- */
-static int pi3dpx1205a_set_eq_fg_sw(struct i2c_client *client, u8 conf)
-{
-	u8 data[BYTE_SIZE] = {0};
-	int res;
-
-	//Read I2C Byte0 to Byte 12
-	res = pi3dpx1205a_readn(client, BYTE_SIZE, data);
-
-	if (res < 0)
-		return -1;
-
-	//Set CONF to 0000b to enter safe state
-	data[3] &= 0x0F;
-	data[4] = eq_fg_sw[conf][0];
-	data[5] = eq_fg_sw[conf][1];
-	data[6] = eq_fg_sw[conf][2];
-	data[7] = eq_fg_sw[conf][3];
-	data[8] = eq_fg_sw[conf][4];
-	data[12] = eq_fg_sw[conf][5];
-
-	res = pi3dpx1205a_writen(client, BYTE_SIZE, data);
-
-	return res;
-}
-
-#ifdef USB_DP_DEBUG
-/*
- * Read PI3DPX1205A Byte 3 to get channel mapping state
- *return value: Byte3
- */
-int pi3dpx1205a_get_conf(struct i2c_client *client)
-{
-	int reg = pi3dpx1205a_read(client, 3)
-
-	//Read fail
-	if (reg < 0)
-		return -1;
-
-	reg &= 0xF0;
-	return (reg >> 4); //return bit[7:4] of byte3
-}
-#endif
-
-/*
- * Write PI3DPX1205A Byte 4 and Byte 12 to set HPD state
- * return value: no of byte written
- */
-int pi3dpx1205a_hpd(struct i2c_client *client, u8 hpd)
-{
-	u8 data[13];
-	int conf = 0;
-	int res;
-
-	usbc_dbg(K_INFO, "hpd=%d\n", hpd);
-
-	//Read I2C Byte0 to Byte 12
-	res = pi3dpx1205a_readn(client, 13, data);
-	if (res < 0)
-		return -1;
-
-	//Get CONF
-	conf = data[3];
-	conf &= 0xF0;
-	conf = conf >> 4;
-
-	data[4] = eq_fg_sw[conf][0];
-
-	if (hpd) {
-		//If HPD is high, power on DP channels by
-		//clear bits[7:4] of byte 4 (corresponding DP channels).
-		data[4] = eq_fg_sw[conf][0] & 0x0F;
-	} else {
-		if (conf == 2)
-			data[4] = eq_fg_sw[conf][0] | 0xE0;
-		else if (conf == 3)
-			data[4] = eq_fg_sw[conf][0] | 0x70;
-		else if (conf == 6)
-			data[4] = eq_fg_sw[conf][0] | 0x20;
-		else if (conf == 7)
-			data[4] = eq_fg_sw[conf][0] | 0x40;
-	}
-
-	if (hpd) {
-		if ((conf == 2) || (conf == 3) || (conf == 6) || (conf == 7))
-			//If HPD is high,
-			//enable IN_HPD pin by clear bit2 of byte12
-			data[12] = eq_fg_sw[conf][5] | 0x04;
-	} else
-		data[12] = eq_fg_sw[conf][5] & 0xFB;
-
-	res = pi3dpx1205a_writen(client, 13, data);
-
-	return res;
+	return pi3dpx1205a_write_config(client, flipped ?
+		TB132FU_DP_MUX_FLIPPED : TB132FU_DP_MUX_NORMAL);
 }
 
 static int pi3dpx1205a_init(struct i2c_client *client)
 {
-	int res;
+	int ret;
 
-	res = pi3dpx1205a_set_eq_fg_sw(client, 0);
+	ret = pi3dpx1205a_read_config(client);
+	if (ret < 0)
+		return ret;
 
-	if (res < 0)
-		return -1;
-
-	return 0;
+	return pi3dpx1205a_write_config(client, TB132FU_DP_MUX_SAFE);
 }
 
 static int usbdp_i2c_probe(struct i2c_client *client,
@@ -281,14 +109,19 @@ static int usbdp_i2c_probe(struct i2c_client *client,
 	int ret;
 
 	ret = i2c_check_functionality(client->adapter,
-						  I2C_FUNC_SMBUS_I2C_BLOCK |
 						  I2C_FUNC_SMBUS_BYTE_DATA);
 	usbc_dbg(K_INFO, "%s I2C functionality : %s\n", __func__,
 		ret ? "ok" : "fail");
 
-	usbdp_client = client;
+	if (!ret)
+		return -EOPNOTSUPP;
 
-	return pi3dpx1205a_init(client);
+	ret = pi3dpx1205a_init(client);
+	if (ret < 0)
+		return ret;
+
+	usbdp_client = client;
+	return 0;
 }
 
 static int usbdp_i2c_remove(struct i2c_client *client)
@@ -319,11 +152,6 @@ static int chg_tcp_notifier_call(struct notifier_block *nb,
 	 * };
 	 */
 	struct tcp_notify *noti = data;
-	/* Debug */
-	u8 dbg_data[13];
-	int res;
-	int i;
-	/* Debug */
 
 	usbc_dbg(K_INFO, "%s event=%x", __func__, event);
 
@@ -341,39 +169,13 @@ static int chg_tcp_notifier_call(struct notifier_block *nb,
 		usbc_dbg(K_INFO, "TCP_NOTIFY_AMA_DP_STATE signal:%x pin:%x polarity:%x\n",
 			signal, pin, polarity);
 
-		if (!polarity) {
-			switch (pin) {
-			case 4:
-			case 16:
-				pi3dpx1205a_set_eq_fg_sw(usbdp_client, 2);
-				pi3dpx1205a_set_conf(usbdp_client, 2);
-				break;
-			case 8:
-			case 32:
-				pi3dpx1205a_set_eq_fg_sw(usbdp_client, 6);
-				pi3dpx1205a_set_conf(usbdp_client, 6);
-				break;
-			default:
-				usbc_dbg(K_INFO, "%s: pin_assignment not support\n",
-					__func__);
-			}
-		} else {
-			switch (pin) {
-			case 4:
-			case 16:
-				pi3dpx1205a_set_eq_fg_sw(usbdp_client, 3);
-				pi3dpx1205a_set_conf(usbdp_client, 3);
-				break;
-			case 8:
-			case 32:
-				pi3dpx1205a_set_eq_fg_sw(usbdp_client, 7);
-				pi3dpx1205a_set_conf(usbdp_client, 7);
-				break;
-			default:
-				usbc_dbg(K_INFO, "%s: pin_assignment not support\n",
-					__func__);
-			}
+		if (pin != 4 && pin != 8 && pin != 16 && pin != 32) {
+			usbc_dbg(K_INFO, "%s: pin_assignment not support\n",
+				__func__);
+			return NOTIFY_OK;
 		}
+
+		pi3dpx1205a_set_orientation(usbdp_client, polarity);
 
 		hdp_state = 0;
 		schedule_delayed_work(&check_wk, msecs_to_jiffies(CHECK_HPD_DELAY));
@@ -387,39 +189,36 @@ static int chg_tcp_notifier_call(struct notifier_block *nb,
 		hdp_state = state;
 
 		if (state) {
-			pi3dpx1205a_hpd(usbdp_client, 1);
 			if (irq) {
 				if (dp_sw_connect == false) {
 					usbc_dbg(K_INFO, "Force connect\n");
-					//mtk_dp_SWInterruptSet(0x4);
+					mtk_dp_SWInterruptSet(0x4);
 					dp_sw_connect = true;
 				}
-				//mtk_dp_SWInterruptSet(0x8);
+				mtk_dp_SWInterruptSet(0x8);
 			} else {
-				//mtk_dp_SWInterruptSet(0x4);
+				mtk_dp_SWInterruptSet(0x4);
 				dp_sw_connect = true;
 			}
 		} else {
-			pi3dpx1205a_hpd(usbdp_client, 0);
-			//mtk_dp_SWInterruptSet(0x2);
+			mtk_dp_SWInterruptSet(0x2);
 			dp_sw_connect = false;
 		}
 	} else if (event == TCP_NOTIFY_TYPEC_STATE) {
+		pi3dpx1205a_set_orientation(usbdp_client,
+			noti->typec_state.polarity);
+
 		if ((noti->typec_state.old_state == TYPEC_ATTACHED_SRC ||
 			noti->typec_state.old_state == TYPEC_ATTACHED_SNK) &&
 			noti->typec_state.new_state == TYPEC_UNATTACHED) {
 			usbc_dbg(K_INFO, "Plug out\n");
-			//mtk_dp_SWInterruptSet(0x2);
+			mtk_dp_SWInterruptSet(0x2);
 			dp_sw_connect = false;
-			pi3dpx1205a_set_eq_fg_sw(usbdp_client, 0);
+			pi3dpx1205a_write_config(usbdp_client,
+				TB132FU_DP_MUX_SAFE);
 		}
 	}
 
-	/* Debug */
-	res = pi3dpx1205a_readn(usbdp_client, 13, dbg_data);
-	for (i = 0; i < 13; i++)
-		usbc_dbg(K_INFO, "%s data[%d]=%x", __func__, i, dbg_data[i]);
-	/* Debug */
 	return NOTIFY_OK;
 }
 
@@ -451,8 +250,8 @@ static void check_hpd(struct work_struct *work)
 {
 	if (hdp_state == 0) {
 		usbc_dbg(K_INFO, "%s No HPD connection event", __func__);
-		pi3dpx1205a_hpd(usbdp_client, 1);
-		//mtk_dp_SWInterruptSet(0x4);
+		mtk_dp_SWInterruptSet(0x4);
+		dp_sw_connect = true;
 	}
 }
 
@@ -500,18 +299,14 @@ void usb3_switch_dps_en(bool en)
 
 void usb3_switch_ctrl_sel(int sel)
 {
-	int res;
+	int res = 0;
 
 	usbc_dbg(K_INFO, "en=%d\n", sel);
 
-	if (sel == CC1_SIDE) {
-		res = pi3dpx1205a_set_eq_fg_sw(usbdp_client, 4);
-		res = pi3dpx1205a_set_conf(usbdp_client, 4);
-	} else if (sel == CC2_SIDE) {
-		/* U3 mux test purpose */
-		res = pi3dpx1205a_set_eq_fg_sw(usbdp_client, 5);
-		res = pi3dpx1205a_set_conf(usbdp_client, 5);
-	}
+	if (sel == CC1_SIDE)
+		res = pi3dpx1205a_set_orientation(usbdp_client, false);
+	else if (sel == CC2_SIDE)
+		res = pi3dpx1205a_set_orientation(usbdp_client, true);
 
 	if (res < 0)
 		usbc_dbg(K_ERR, "%s fail\n", __func__);
@@ -521,7 +316,7 @@ struct usbdp_pin_ctrl dp_pctrl;
 
 static int usbdp_pinctrl_probe(struct platform_device *pdev)
 {
-	int i, j, ret = 0;
+	int ret = 0;
 	struct device_node *np;
 	const char *platform;
 
@@ -564,21 +359,6 @@ static int usbdp_pinctrl_probe(struct platform_device *pdev)
 
 		usbc_dbg(K_DEBUG, "%s: find platform info %s\n",
 			__func__, platform);
-		if (strcmp("evb", platform) == 0) {
-			for (i = 0; i < 8; ++i) {
-				for (j = 0; j < 6; ++j) {
-					usbc_dbg(K_DEBUG, "evb\n");
-					eq_fg_sw[i][j] = eq_fg_sw_evb[i][j];
-				}
-			}
-		} else {
-			for (i = 0; i < 8; ++i) {
-				for (j = 0; j < 6; ++j) {
-					usbc_dbg(K_DEBUG, "non-evb\n");
-					eq_fg_sw[i][j] = eq_fg_sw_evb[i][j];
-				}
-			}
-		};
 	}
 
 	return ret;

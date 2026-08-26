@@ -344,11 +344,22 @@ static void mtk_dsc1_config(struct mtk_ddp_comp *comp,
 	if (!comp->mtk_crtc || (!comp->mtk_crtc->panel_ext
 				&& !comp->mtk_crtc->is_dual_pipe))
 		return;
-	dsc_params =
-#ifndef CONFIG_MTK_HDMI_SUPPORT
-	 &comp->mtk_crtc->panel_ext->params->dsc_params;
+	/*
+	 * HDMI support is a build capability, not an output selector.  The
+	 * original MediaTek conditional replaced the internal panel's DSC
+	 * parameters with the hard-coded 4K DisplayPort defaults whenever DP
+	 * was compiled, which stalls the TB132FU internal display pipeline.
+	 * Keep panel-owned parameters for DSI and use the DP defaults only for
+	 * an output that has no attached panel.
+	 */
+	if (comp->mtk_crtc->panel_ext)
+		dsc_params = &comp->mtk_crtc->panel_ext->params->dsc_params;
+#ifdef CONFIG_MTK_HDMI_SUPPORT
+	else
+		dsc_params = mtk_dsc_default_setting();
 #else
-	mtk_dsc_default_setting();
+	else
+		return;
 #endif
 	if (dsc_params->enable == 1) {
 		DDPMSG("%s, w:%d, h:%d, slice_mode:%d,slice(%d,%d),bpp:%d\n",
@@ -637,11 +648,15 @@ static void mtk_dsc_config(struct mtk_ddp_comp *comp,
 	if (!comp->mtk_crtc || (!comp->mtk_crtc->panel_ext
 				&& !comp->mtk_crtc->is_dual_pipe))
 		return;
-	dsc_params =
-#ifndef CONFIG_MTK_HDMI_SUPPORT
-	 &comp->mtk_crtc->panel_ext->params->dsc_params;
+	/* Preserve the internal panel DSC configuration when DP is built. */
+	if (comp->mtk_crtc->panel_ext)
+		dsc_params = &comp->mtk_crtc->panel_ext->params->dsc_params;
+#ifdef CONFIG_MTK_HDMI_SUPPORT
+	else
+		dsc_params = mtk_dsc_default_setting();
 #else
-	mtk_dsc_default_setting();
+	else
+		return;
 #endif
 	if (dsc_params->enable == 1) {
 		DDPMSG("%s, w:%d, h:%d, slice_mode:%d,slice(%d,%d),bpp:%d\n",

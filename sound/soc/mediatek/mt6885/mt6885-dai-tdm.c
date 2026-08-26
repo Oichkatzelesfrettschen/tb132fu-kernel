@@ -8,6 +8,8 @@
 
 #include <linux/regmap.h>
 #include <linux/module.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <sound/pcm_params.h>
 #include "mt6885-afe-clk.h"
 #include "mt6885-afe-common.h"
@@ -32,6 +34,25 @@ module_param_named(tb132fu_dptx_bck_requested,
 module_param_named(tb132fu_dptx_tdm_con1,
 		   tb132fu_dptx_tdm_con1, uint, 0444);
 module_param_named(tb132fu_dptx_con, tb132fu_dptx_con, uint, 0444);
+
+static int tb132fu_dptx_config_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m,
+		   "rate=%u\nchannels=%u\nformat=%u\nmclk_requested=%u\n"
+		   "bck_requested=%u\ntdm_con1=0x%08x\ndptx_con=0x%08x\n",
+		   tb132fu_dptx_rate, tb132fu_dptx_channels,
+		   tb132fu_dptx_format, tb132fu_dptx_mclk_requested,
+		   tb132fu_dptx_bck_requested, tb132fu_dptx_tdm_con1,
+		   tb132fu_dptx_con);
+	return 0;
+}
+
+static int __init tb132fu_dptx_config_proc_init(void)
+{
+	return proc_create_single("tb132fu_dptx_config", 0444, NULL,
+				  tb132fu_dptx_config_proc_show) ? 0 : -ENOMEM;
+}
+late_initcall(tb132fu_dptx_config_proc_init);
 
 struct mtk_afe_tdm_priv {
 	int bck_id;

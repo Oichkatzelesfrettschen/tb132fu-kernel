@@ -8,6 +8,8 @@
 
 #include <linux/clk.h>
 #include <linux/module.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 #include <linux/arm-smccc.h> /* for Kernel Native SMC API */
@@ -42,6 +44,26 @@ module_param_named(tb132fu_i2s4_bck_parent,
 		   tb132fu_i2s4_bck_parent, uint, 0444);
 module_param_named(tb132fu_auddiv_0, tb132fu_auddiv_0, uint, 0444);
 module_param_named(tb132fu_auddiv_2, tb132fu_auddiv_2, uint, 0444);
+
+static int tb132fu_dptx_clock_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m,
+		   "mck_requested=%u\nmck_actual=%u\nmck_parent=%u\n"
+		   "bck_requested=%u\nbck_actual=%u\nbck_parent=%u\n"
+		   "auddiv_0=0x%08x\nauddiv_2=0x%08x\n",
+		   tb132fu_i2s4_mck_requested, tb132fu_i2s4_mck_actual,
+		   tb132fu_i2s4_mck_parent, tb132fu_i2s4_bck_requested,
+		   tb132fu_i2s4_bck_actual, tb132fu_i2s4_bck_parent,
+		   tb132fu_auddiv_0, tb132fu_auddiv_2);
+	return 0;
+}
+
+static int __init tb132fu_dptx_clock_proc_init(void)
+{
+	return proc_create_single("tb132fu_dptx_clock", 0444, NULL,
+				  tb132fu_dptx_clock_proc_show) ? 0 : -ENOMEM;
+}
+late_initcall(tb132fu_dptx_clock_proc_init);
 
 static const char *aud_clks[CLK_NUM] = {
 	[CLK_AFE] = "aud_afe_clk",

@@ -601,6 +601,10 @@ static int mt_ac_get_property(struct power_supply *psy,
 	enum power_supply_property psp, union power_supply_propval *val)
 {
 	struct mt_charger *mtk_chg = power_supply_get_drvdata(psy);
+	struct chg_type_info *cti = mtk_chg->cti;
+	int input_current;
+	int rc;
+	int vbus;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
@@ -613,6 +617,19 @@ static int mt_ac_get_property(struct power_supply *psy,
 			(mtk_chg->chg_type == CHARGING_HOST) ||
 			(mtk_chg->chg_type == WIRELESS_CHARGER))
 			val->intval = 0;
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		rc = cti ? charger_manager_get_input_current_limit(
+			cti->chg_consumer, MAIN_CHARGER, &input_current) : -ENODEV;
+		/* The algorithm uses -1 before it selects a negotiated limit. */
+		if (rc < 0 || input_current <= 0)
+			input_current = 1500000;
+		val->intval = input_current;
+		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		/* Report negotiated VBUS, not a hard-coded 5 V USB default. */
+		vbus = battery_get_vbus() * 1000;
+		val->intval = vbus >= 4000000 ? vbus : 5000000;
 		break;
 	default:
 		return -EINVAL;
@@ -664,6 +681,8 @@ static enum power_supply_property mt_charger_properties[] = {
 
 static enum power_supply_property mt_ac_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 };
 
 static enum power_supply_property mt_usb_properties[] = {

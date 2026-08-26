@@ -355,6 +355,7 @@ struct usbdp_pin_ctrl dp_pctrl;
 static int usbdp_pinctrl_probe(struct platform_device *pdev)
 {
 	int ret = 0;
+	int pwr_ret;
 	struct device_node *np;
 	const char *platform;
 
@@ -385,6 +386,26 @@ static int usbdp_pinctrl_probe(struct platform_device *pdev)
 	} else {
 		usbc_dbg(K_DEBUG, "Find ext_pwr_en\n");
 		pinctrl_select_state(dp_pctrl.pinctrl, dp_pctrl.ext_pwr_en);
+	}
+
+	/*
+	 * Both states control GPIO191 on TB132FU: dp_pwr_high drives it high,
+	 * while the misleadingly named dp_ext_pwr_high drives it low.  Lenovo's
+	 * original sequence deliberately finishes by selecting dp_pwr_high a
+	 * second time.  Without this final transition the DP retimer remains
+	 * unpowered and every AUX transaction times out.
+	 */
+	if (!IS_ERR(dp_pctrl.pwr_en)) {
+		pwr_ret = pinctrl_select_state(dp_pctrl.pinctrl,
+					       dp_pctrl.pwr_en);
+		if (pwr_ret < 0) {
+			usbc_dbg(K_ERR, "final DP power enable failed: %d\n",
+				 pwr_ret);
+			if (!ret)
+				ret = pwr_ret;
+		} else {
+			usbc_dbg(K_INFO, "final DP power enable selected\n");
+		}
 	}
 
 	np = of_find_node_by_name(pdev->dev.of_node, "usb_dp-data");

@@ -160,6 +160,7 @@ struct usbpd_pm {
 	struct notifier_block nb;
 
 	bool   psy_change_running;
+	bool   charge_hold;
 	struct work_struct cp_psy_change_work;
 	struct work_struct usb_psy_change_work;
 	spinlock_t psy_change_lock;

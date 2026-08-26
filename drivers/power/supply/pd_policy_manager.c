@@ -6,6 +6,7 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/power_supply.h>
+#include <linux/power/tb132fu_pd_policy.h>
 #include <linux/delay.h>
 #include <linux/workqueue.h>
 #include "pd_policy_manager.h"
@@ -74,6 +75,7 @@ static const struct pdpm_config pm_config = {
 
 extern int g_sw_jeita_sm;
 static struct usbpd_pm *__pdpm;
+static bool charge_hold_requested;
 
 static int fc2_taper_timer;
 static int ibus_lmt_change_timer;
@@ -951,11 +953,15 @@ static void usbpd_pm_workfunc(struct work_struct *work)
 	/*struct usbpd_pm *pdpm = container_of(work, struct usbpd_pm,
 					pm_work.work);*/
 
+	if (READ_ONCE(__pdpm->charge_hold))
+		return;
+
 	usbpd_pm_update_sw_status(__pdpm);
 	usbpd_pm_update_cp_status(__pdpm);
 	usbpd_pm_update_cp_sec_status(__pdpm);
 	
-	if (!usbpd_pm_sm(__pdpm) && __pdpm->pd_active)
+	if (!usbpd_pm_sm(__pdpm) && __pdpm->pd_active &&
+	    !READ_ONCE(__pdpm->charge_hold))
 		schedule_delayed_work(&__pdpm->pm_work,
 				msecs_to_jiffies(PM_WORK_RUN_INTERVAL));
 }
@@ -980,9 +986,9 @@ static void usbpd_pm_disconnect(struct usbpd_pm *pdpm)
     }
     cancel_delayed_work(&pdpm->pm_work);
 
-    if (!pdpm->sw.charge_enabled) {
-        usbpd_pm_enable_sw(pdpm, true);
-    }
+	if (!READ_ONCE(pdpm->charge_hold) && !pdpm->sw.charge_enabled) {
+		usbpd_pm_enable_sw(pdpm, true);
+	}
 
     pdpm->pps_supported = false;
     pdpm->apdo_selected_pdo = 0;
@@ -997,6 +1003,10 @@ static void usbpd_pd_contact(struct usbpd_pm *pdpm, bool connected)
 	pr_err("[SC manager] >> pd_active %d\n",
 			pdpm->pd_active);
 	if (connected) {
+		if (READ_ONCE(pdpm->charge_hold)) {
+			pr_info("charge hold active; skip PPS startup\n");
+			return;
+		}
 		msleep(10);
 		usbpd_pm_evaluate_src_caps(pdpm);
 		pr_err("[SC manager] >>start cp charging pps support %d\n", pdpm->pps_supported);
@@ -1007,6 +1017,76 @@ static void usbpd_pd_contact(struct usbpd_pm *pdpm, bool connected)
 	} else {
 		usbpd_pm_disconnect(pdpm);
 	}
+}
+
+int tb132fu_pd_policy_set_charge_hold(bool hold)
+{
+	struct usbpd_pm *pdpm = READ_ONCE(__pdpm);
+	bool was_hold;
+	int ret = 0;
+	int rc;
+
+	WRITE_ONCE(charge_hold_requested, hold);
+	if (!pdpm)
+		return 0;
+
+	was_hold = READ_ONCE(pdpm->charge_hold);
+	if (hold == was_hold && !hold)
+		return 0;
+
+	WRITE_ONCE(pdpm->charge_hold, hold);
+	cancel_delayed_work_sync(&pdpm->pm_work);
+
+	if (hold) {
+		/*
+		 * The TB132FU SC8551 PPS loop is independent of MediaTek's
+		 * switch-charger manager.  Stop the charge pump and return the
+		 * adapter to its ordinary contract before the main charger is held.
+		 */
+		usbpd_pm_update_cp_status(pdpm);
+		if (was_hold && !pdpm->cp.charge_enabled &&
+		    (!pm_config.cp_sec_enable || !pdpm->cp_sec.charge_enabled))
+			return 0;
+		if (pdpm->cp.charge_enabled) {
+			rc = usbpd_pm_enable_cp(pdpm, false);
+			if (rc < 0)
+				ret = rc;
+			usbpd_pm_check_cp_enabled(pdpm);
+			if (pdpm->cp.charge_enabled) {
+				pr_err("TB132FU charge hold failed to stop primary charge pump\n");
+				ret = -EIO;
+			}
+		}
+		if (pm_config.cp_sec_enable && pdpm->cp_sec.charge_enabled) {
+			rc = usbpd_pm_enable_cp_sec(pdpm, false);
+			if (rc < 0)
+				ret = rc;
+			usbpd_pm_check_cp_sec_enabled(pdpm);
+			if (pdpm->cp_sec.charge_enabled) {
+				pr_err("TB132FU charge hold failed to stop secondary charge pump\n");
+				ret = -EIO;
+			}
+		}
+		if (pdpm->tcpc && check_typec_attached_snk(pdpm->tcpc) == 0) {
+			usbpd_select_pdo(pdpm, 5000, 3000);
+			usbpd_pps_enable_charging(pdpm, false, 5000, 3000);
+		}
+		usbpd_pm_move_state(pdpm, PD_PM_STATE_ENTRY);
+		pr_info("TB132FU charge hold stopped PPS charge pump\n");
+		return ret;
+	}
+
+	if (!pdpm->pd_active || check_typec_attached_snk(pdpm->tcpc) < 0)
+		return 0;
+
+	pdpm->pps_supported = false;
+	usbpd_pm_evaluate_src_caps(pdpm);
+	if (pdpm->pps_supported)
+		schedule_delayed_work(&pdpm->pm_work, 0);
+	pr_info("TB132FU charge hold released; PPS eligible=%d\n",
+		pdpm->pps_supported);
+
+	return 0;
 }
 
 static void cp_psy_change_work(struct work_struct *work)
@@ -1153,7 +1233,7 @@ static int __init usbpd_pm_init(void)
 	if (!pdpm)
 		return -ENOMEM;
 
-	__pdpm = pdpm;
+	pdpm->charge_hold = READ_ONCE(charge_hold_requested);
     
 	INIT_WORK(&pdpm->cp_psy_change_work, cp_psy_change_work);
 	INIT_WORK(&pdpm->usb_psy_change_work, usb_psy_change_work);
@@ -1170,6 +1250,7 @@ static int __init usbpd_pm_init(void)
 	INIT_DELAYED_WORK(&pdpm->pm_work, usbpd_pm_workfunc);
 	INIT_DELAYED_WORK(&pdpm->tcpc_register_work,
 			  usbpd_tcpc_register_work);
+	__pdpm = pdpm;
 	
 	/* register tcp notifier callback */
 	pdpm->tcp_nb.notifier_call = pca_pps_tcp_notifier_call;
@@ -1199,4 +1280,3 @@ static void __exit usbpd_pm_exit(void)
 
 module_init(usbpd_pm_init);
 module_exit(usbpd_pm_exit);
-

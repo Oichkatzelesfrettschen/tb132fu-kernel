@@ -44,6 +44,7 @@
 #include <linux/sched.h>
 #include <linux/poll.h>
 #include <linux/power_supply.h>
+#include <linux/power/tb132fu_pd_policy.h>
 #include <linux/pm_wakeup.h>
 #include <linux/time.h>
 #include <linux/mutex.h>
@@ -2059,6 +2060,7 @@ static void charger_check_status(struct charger_manager *info)
 		charging = false;
 	if (info->mmi.user_charge_limit > 0) {
 		int ui_soc = battery_get_uisoc();
+		int ret;
 		bool was_active = info->mmi.user_charge_limit_active;
 
 		if (!was_active && ui_soc >= info->mmi.user_charge_limit)
@@ -2067,10 +2069,20 @@ static void charger_check_status(struct charger_manager *info)
 			 ui_soc <= info->mmi.user_charge_limit - 3)
 			info->mmi.user_charge_limit_active = false;
 
-		if (was_active != info->mmi.user_charge_limit_active)
+		if (info->mmi.user_charge_limit_active) {
+			ret = tb132fu_pd_policy_set_charge_hold(true);
+			if (ret < 0)
+				pr_err("TB132FU charge limit failed to hold PPS path: %d\n",
+					ret);
+		} else if (was_active) {
+			tb132fu_pd_policy_set_charge_hold(false);
+		}
+
+		if (was_active != info->mmi.user_charge_limit_active) {
 			pr_info("TB132FU charge limit: %s at %d%% (limit %d%%)\n",
 				info->mmi.user_charge_limit_active ? "holding" : "resuming",
 				ui_soc, info->mmi.user_charge_limit);
+		}
 
 		if (info->mmi.user_charge_limit_active)
 			charging = false;
@@ -3314,6 +3326,9 @@ static ssize_t charge_limit_store(struct device *dev,
 				const char *buf, size_t count)
 {
 	unsigned long limit;
+	bool was_active;
+	bool hold = false;
+	int ui_soc;
 	int ret;
 
 	ret = kstrtoul(buf, 0, &limit);
@@ -3326,12 +3341,19 @@ static ssize_t charge_limit_store(struct device *dev,
 	if (!mmi_info)
 		return -ENODEV;
 
+	was_active = mmi_info->mmi.user_charge_limit_active;
+	ui_soc = battery_get_uisoc();
+	if (limit)
+		hold = was_active ? ui_soc > limit - 3 : ui_soc >= limit;
+
 	mmi_info->mmi.user_charge_limit = limit;
-	if (!limit)
-		mmi_info->mmi.user_charge_limit_active = false;
+	mmi_info->mmi.user_charge_limit_active = hold;
+	if (was_active != hold)
+		tb132fu_pd_policy_set_charge_hold(hold);
 	_wake_up_charger(mmi_info);
 
-	pr_info("TB132FU charge limit set to %lu%%\n", limit);
+	pr_info("TB132FU charge limit set to %lu%% (soc %d%%, hold %d)\n",
+		limit, ui_soc, hold);
 	return count;
 }
 

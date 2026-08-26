@@ -392,6 +392,8 @@ struct mmi_params {
 	bool			factory_mode;
 	int			demo_mode;
 	bool			demo_discharging;
+	int			user_charge_limit;
+	bool			user_charge_limit_active;
 
 	bool			factory_kill_armed;
 

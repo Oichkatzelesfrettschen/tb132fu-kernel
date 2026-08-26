@@ -2032,6 +2032,24 @@ static void charger_check_status(struct charger_manager *info)
 		charging = false;
 	if (info->mmi.demo_discharging)
 		charging = false;
+	if (info->mmi.user_charge_limit > 0) {
+		int ui_soc = battery_get_uisoc();
+		bool was_active = info->mmi.user_charge_limit_active;
+
+		if (!was_active && ui_soc >= info->mmi.user_charge_limit)
+			info->mmi.user_charge_limit_active = true;
+		else if (was_active &&
+			 ui_soc <= info->mmi.user_charge_limit - 3)
+			info->mmi.user_charge_limit_active = false;
+
+		if (was_active != info->mmi.user_charge_limit_active)
+			pr_info("TB132FU charge limit: %s at %d%% (limit %d%%)\n",
+				info->mmi.user_charge_limit_active ? "holding" : "resuming",
+				ui_soc, info->mmi.user_charge_limit);
+
+		if (info->mmi.user_charge_limit_active)
+			charging = false;
+	}
 
 	if (info->mmi.factory_mode) {
 		if (charging_enable_flag)
@@ -3266,6 +3284,44 @@ static DEVICE_ATTR(force_demo_mode, 0644,
 		force_demo_mode_show,
 		force_demo_mode_store);
 
+static ssize_t charge_limit_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	unsigned long limit;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &limit);
+	if (ret)
+		return ret;
+
+	/* Zero disables the feature; UI-exposed limits must remain conservative. */
+	if (limit != 0 && (limit < 50 || limit > 95))
+		return -EINVAL;
+	if (!mmi_info)
+		return -ENODEV;
+
+	mmi_info->mmi.user_charge_limit = limit;
+	if (!limit)
+		mmi_info->mmi.user_charge_limit_active = false;
+	_wake_up_charger(mmi_info);
+
+	pr_info("TB132FU charge limit set to %lu%%\n", limit);
+	return count;
+}
+
+static ssize_t charge_limit_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	if (!mmi_info)
+		return -ENODEV;
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n",
+			 mmi_info->mmi.user_charge_limit);
+}
+
+static DEVICE_ATTR(charge_limit, 0644, charge_limit_show, charge_limit_store);
+
 static ssize_t force_max_chrg_temp_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
@@ -3325,6 +3381,8 @@ void mmi_init(struct charger_manager *info)
 
 	info->mmi.is_factory_image = false;
 	info->mmi.charging_limit_modes = CHARGING_LIMIT_UNKNOWN;
+	info->mmi.user_charge_limit = 0;
+	info->mmi.user_charge_limit_active = false;
 	info->mmi.adaptive_charging_disable_ibat = false;
 	info->mmi.adaptive_charging_disable_ichg = false;
 	info->mmi.charging_enable_hz = false;
@@ -3379,6 +3437,10 @@ void mmi_init(struct charger_manager *info)
 				&dev_attr_factory_charge_upper);
 	if (rc)
 		pr_err("[%s]couldn't create factory_charge_upper\n", __func__);
+
+	rc = device_create_file(&info->pdev->dev, &dev_attr_charge_limit);
+	if (rc)
+		pr_err("[%s]couldn't create charge_limit\n", __func__);
 
 	rc = charger_dev_set_eoc_current(info->chg1_dev,
 				info->mmi.chrg_iterm*1000);

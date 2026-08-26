@@ -26,6 +26,14 @@ config DRM_MEDIATEK_HDMI
 	help
 	  DRM/KMS HDMI driver for Mediatek SoCs
 
+config MTK_HDMI_SUPPORT
+	bool "MediaTek USB-C DisplayPort transmitter support"
+	depends on DRM_MEDIATEK
+	depends on MTK_USB_TYPEC_DP_MUX
+	help
+	  Build the MediaTek DisplayPort transmitter and interface used for
+	  USB-C DisplayPort alternate mode on supported MediaTek platforms.
+
 config MTK_HDR_COLOR_GAIN_RGB
 	hex "Config CCORR parameters for HDR layers"
 	default 0

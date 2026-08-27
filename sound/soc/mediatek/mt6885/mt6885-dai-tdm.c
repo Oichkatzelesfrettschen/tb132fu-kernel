@@ -578,8 +578,6 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	/* calculate mclk_rate, if not set explicitly */
 	if (!tdm_priv->mclk_rate) {
 		tdm_priv->mclk_rate = rate * tdm_priv->mclk_multiple;
-		if (tdm_id == MT6885_DAI_TDM_DPTX)
-			tdm_priv->mclk_rate /= 2;
 		mtk_dai_tdm_cal_mclk(afe,
 				     tdm_priv,
 				     tdm_priv->mclk_rate);
@@ -595,7 +593,9 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	 * twice the rate represented by its PCM pointer.  Android supplies
 	 * 48 kHz stereo S32_LE, but the hardware timestamp advances at about
 	 * 96 kHz.  Keep the PCM and DP channel-status rate unchanged while
-	 * compensating the physical DPTX MCK/BCK requests at their source.
+	 * compensating the physical DPTX BCK request at its source.  Preserve
+	 * the normal MCK request because the DP transmitter requires the original
+	 * MCK-to-BCK relationship to produce audible PCM.
 	 * Other TDM paths, including the internal speakers, are unaffected.
 	 */
 	if (tdm_id == MT6885_DAI_TDM_DPTX)

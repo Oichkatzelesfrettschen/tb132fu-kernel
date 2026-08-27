@@ -255,6 +255,7 @@ struct mtk_dp {
 	struct workqueue_struct *dptx_wq;
 	struct work_struct hdcp_work;
 	struct work_struct dptx_work;
+	struct delayed_work audio_pcm_work;
 
 	u32 min_clock;
 	u32 max_clock;
@@ -268,6 +269,8 @@ struct mtk_dp {
 	int disp_status;  //for DDP
 	bool bPowerOn;
 	bool audio_enable;
+	bool audio_config_valid;
+	bool audio_pcm_running;
 	bool video_enable;
 	bool dp_ready;
 	bool has_dsc;
@@ -279,4 +282,3 @@ struct mtk_dp {
 };
 
 #endif /*__DRTX_TYPE_H__*/
-

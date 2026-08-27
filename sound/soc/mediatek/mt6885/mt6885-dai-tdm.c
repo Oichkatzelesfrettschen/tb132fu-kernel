@@ -7,6 +7,7 @@
  */
 
 #include <linux/regmap.h>
+#include <linux/soc/mediatek/mtk-dp-audio.h>
 #include <sound/pcm_params.h>
 #include "mt6885-afe-clk.h"
 #include "mt6885-afe-common.h"
@@ -574,23 +575,10 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	unsigned int channels = params_channels(params);
 	snd_pcm_format_t format = params_format(params);
 	int physical_width = snd_pcm_format_physical_width(format);
-	unsigned int hdmi_frame_words = channels;
 	unsigned int tdm_con = 0;
 
 	if (physical_width <= 0)
 		return -EINVAL;
-
-	/*
-	 * The HDMI memif advances in 32-bit words.  The R5 TVOut path supplies
-	 * packed S16 stereo, so one memory word contains both left and right.
-	 * Programming the logical channel count (2) advances two words per wire
-	 * frame and is the measured ~1.93x chipmunk/stutter failure.  K41's one
-	 * word restored real-time consumption but its then-unpacked format could
-	 * carry only the left channel.  Keep the DPTX format inherited from the
-	 * packed front end so one word now carries both enabled DPTX channels.
-	 */
-	if (tdm_id == MT6885_DAI_TDM_DPTX)
-		hdmi_frame_words = DIV_ROUND_UP(channels * physical_width, 32);
 
 	/* calculate mclk_rate, if not set explicitly */
 	if (!tdm_priv->mclk_rate) {
@@ -611,11 +599,10 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	if (tdm_priv->mclk_rate % tdm_priv->bck_rate != 0)
 		AUDIO_AEE("bck cannot generate");
 
-	dev_info(afe->dev, "%s(), id %d, rate %d, channels %d, format %d, mclk_rate %d, bck_rate %d, hdmi_frame_words %u\n",
+	dev_info(afe->dev, "%s(), id %d, rate %d, channels %d, format %d, mclk_rate %d, bck_rate %d\n",
 		 __func__,
 		 tdm_id, rate, channels, format,
-		 tdm_priv->mclk_rate, tdm_priv->bck_rate,
-		 hdmi_frame_words);
+		 tdm_priv->mclk_rate, tdm_priv->bck_rate);
 
 	/* set tdm */
 	tdm_con = 1 << BCK_INVERSE_SFT;
@@ -686,10 +673,10 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 		regmap_write(afe->regmap, AFE_TDM_CON2, tdm_con);
 	}
 
-	/* Program the number of 32-bit memory words consumed per wire frame. */
+	/* Lenovo programs the logical channel count: stereo must remain 2 here. */
 	regmap_update_bits(afe->regmap, AFE_HDMI_OUT_CON0,
 			   HDMI_CH_NUM_MASK_SFT,
-			   hdmi_frame_words << HDMI_CH_NUM_SFT);
+			   channels << HDMI_CH_NUM_SFT);
 
 	/*
 	 * Lenovo applies the DPTX/TDM pad configuration only after publishing
@@ -727,9 +714,14 @@ static int mtk_dai_tdm_trigger(struct snd_pcm_substream *substream,
 		/* enable tdm */
 		regmap_update_bits(afe->regmap, AFE_TDM_CON1,
 				   TDM_EN_MASK_SFT, 0x1 << TDM_EN_SFT);
+		if (tdm_id == MT6885_DAI_TDM_DPTX)
+			mtk_dp_audio_pcm_start();
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
+		if (tdm_id == MT6885_DAI_TDM_DPTX)
+			mtk_dp_audio_pcm_stop();
+
 		/* disable tdm */
 		regmap_update_bits(afe->regmap, AFE_TDM_CON1,
 				   TDM_EN_MASK_SFT, 0);

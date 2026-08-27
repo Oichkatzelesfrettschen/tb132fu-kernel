@@ -24,6 +24,8 @@
 #include <../../../extcon/extcon.h>
 #include <linux/kthread.h>
 #include <linux/errno.h>
+#include <linux/export.h>
+#include <linux/soc/mediatek/mtk-dp-audio.h>
 
 #include <drm/drmP.h>
 #include <drm/drm_atomic_helper.h>
@@ -50,6 +52,8 @@ static int fakeres = FAKE_DEFAULT_RES;
 static int fakebpc = DP_COLOR_DEPTH_8BIT;
 struct mutex dp_lock;
 static bool g_hdcp_on = 1;
+
+#define MTK_DP_AUDIO_PCM_LATCH_DELAY_MS 20
 
 static const struct drm_display_mode dptx_est_modes[] = {
 	/* 2160x3840@60Hz */
@@ -2351,7 +2355,11 @@ int mdrv_DPTx_Handle(struct mtk_dp *mtk_dp)
 			mdrv_DPTx_Video_Enable(mtk_dp, true);
 		}
 
-		if (mtk_dp->audio_enable && (mtk_dp->info.audio_caps != 0)) {
+		if (READ_ONCE(mtk_dp->audio_enable) &&
+		    READ_ONCE(mtk_dp->audio_config_valid) &&
+		    READ_ONCE(mtk_dp->audio_pcm_running) &&
+		    (mtk_dp->info.audio_caps != 0)) {
+			mdrv_DPTx_I2S_Audio_Enable(mtk_dp, false);
 			mdrv_DPTx_I2S_Audio_Config(mtk_dp);
 			mdrv_DPTx_I2S_Audio_Enable(mtk_dp, true);
 		}
@@ -3051,20 +3059,102 @@ int mtk_drm_dp_get_dev_info(struct drm_device *dev, void *data,
 	return 0;
 }
 
+static void mtk_dp_audio_pcm_work(struct work_struct *work)
+{
+	struct mtk_dp *mtk_dp = container_of(to_delayed_work(work),
+					      struct mtk_dp, audio_pcm_work);
+
+	mutex_lock(&dp_lock);
+	if (!mtk_dp->dp_ready)
+		goto out;
+
+	if (!READ_ONCE(mtk_dp->audio_pcm_running) ||
+	    !READ_ONCE(mtk_dp->audio_enable) ||
+	    !READ_ONCE(mtk_dp->audio_config_valid)) {
+		mdrv_DPTx_I2S_Audio_Enable(mtk_dp, false);
+		goto out;
+	}
+
+	/*
+	 * TB132FU requires the DP packetizer to latch its configuration after
+	 * the AFE/TDM path is running. Userspace configures and enables DP during
+	 * pcm_open(), before tinyalsa's first write starts the PCM. Replay the
+	 * qualified mute -> configure -> unmute sequence here, after trigger.
+	 */
+	mdrv_DPTx_I2S_Audio_Enable(mtk_dp, false);
+	mdrv_DPTx_I2S_Audio_Config(mtk_dp);
+	if (READ_ONCE(mtk_dp->audio_pcm_running) &&
+	    READ_ONCE(mtk_dp->audio_enable)) {
+		mdrv_DPTx_I2S_Audio_Enable(mtk_dp, true);
+		DPTXMSG("TB132FU stereo audio latched after PCM start\n");
+	}
+
+out:
+	mutex_unlock(&dp_lock);
+}
+
+void mtk_dp_audio_pcm_start(void)
+{
+	struct mtk_dp *mtk_dp = READ_ONCE(g_mtk_dp);
+
+	if (!mtk_dp)
+		return;
+
+	WRITE_ONCE(mtk_dp->audio_pcm_running, true);
+	if (mtk_dp->dptx_wq)
+		mod_delayed_work(mtk_dp->dptx_wq, &mtk_dp->audio_pcm_work,
+			msecs_to_jiffies(MTK_DP_AUDIO_PCM_LATCH_DELAY_MS));
+}
+EXPORT_SYMBOL_GPL(mtk_dp_audio_pcm_start);
+
+void mtk_dp_audio_pcm_stop(void)
+{
+	struct mtk_dp *mtk_dp = READ_ONCE(g_mtk_dp);
+
+	if (!mtk_dp)
+		return;
+
+	WRITE_ONCE(mtk_dp->audio_pcm_running, false);
+	if (mtk_dp->dptx_wq)
+		mod_delayed_work(mtk_dp->dptx_wq, &mtk_dp->audio_pcm_work, 0);
+}
+EXPORT_SYMBOL_GPL(mtk_dp_audio_pcm_stop);
+
 int mtk_drm_dp_audio_enable(struct drm_device *dev, void *data,
 		struct drm_file *file_priv)
 {
 	struct mtk_dp *mtk_dp = g_mtk_dp;
+	bool enable = *(bool *)data;
 
-	mtk_dp->audio_enable = *(bool *)data;
-	DPTXMSG("audio_enable = %d\n", mtk_dp->audio_enable);
+	WRITE_ONCE(mtk_dp->audio_enable, enable);
+	DPTXMSG("audio_enable = %d\n", enable);
 
 	if (!mtk_dp->dp_ready) {
 		DPTXERR("%s, DP is not ready!\n", __func__);
 		return 0;
 	}
 
-	mdrv_DPTx_I2S_Audio_Enable(mtk_dp, mtk_dp->audio_enable);
+	if (!enable) {
+		if (mtk_dp->dptx_wq)
+			cancel_delayed_work_sync(&mtk_dp->audio_pcm_work);
+		mutex_lock(&dp_lock);
+		mdrv_DPTx_I2S_Audio_Enable(mtk_dp, false);
+		mutex_unlock(&dp_lock);
+		return 0;
+	}
+
+	if (!READ_ONCE(mtk_dp->audio_pcm_running) ||
+	    !READ_ONCE(mtk_dp->audio_config_valid)) {
+		mutex_lock(&dp_lock);
+		mdrv_DPTx_I2S_Audio_Enable(mtk_dp, false);
+		mutex_unlock(&dp_lock);
+		DPTXMSG("TB132FU audio enable deferred until PCM start\n");
+		return 0;
+	}
+
+	if (mtk_dp->dptx_wq)
+		mod_delayed_work(mtk_dp->dptx_wq,
+				 &mtk_dp->audio_pcm_work, 0);
 
 	return 0;
 }
@@ -3075,6 +3165,7 @@ int mtk_drm_dp_audio_config(struct drm_device *dev, void *data,
 	struct mtk_dp *mtk_dp = g_mtk_dp;
 
 	mtk_dp->info.audio_config = *(unsigned int *)data;
+	WRITE_ONCE(mtk_dp->audio_config_valid, true);
 	DPTXMSG("audio_config = 0x%x\n", mtk_dp->info.audio_config);
 
 	if (!mtk_dp->dp_ready) {
@@ -3082,7 +3173,15 @@ int mtk_drm_dp_audio_config(struct drm_device *dev, void *data,
 		return 0;
 	}
 
-	mdrv_DPTx_I2S_Audio_Config(mtk_dp);
+	if (!READ_ONCE(mtk_dp->audio_pcm_running) ||
+	    !READ_ONCE(mtk_dp->audio_enable)) {
+		DPTXMSG("TB132FU audio config deferred until PCM start\n");
+		return 0;
+	}
+
+	if (mtk_dp->dptx_wq)
+		mod_delayed_work(mtk_dp->dptx_wq,
+				 &mtk_dp->audio_pcm_work, 0);
 
 	return 0;
 }
@@ -3813,6 +3912,7 @@ static int mtk_dp_create_workqueue(struct mtk_dp *mtk_dp)
 
 	INIT_WORK(&mtk_dp->dptx_work, mdrv_DPTx_main_handle);
 	INIT_WORK(&mtk_dp->hdcp_work, mdrv_DPTx_hdcp_handle);
+	INIT_DELAYED_WORK(&mtk_dp->audio_pcm_work, mtk_dp_audio_pcm_work);
 
 	return 0;
 }
@@ -3970,8 +4070,10 @@ static int mtk_drm_dp_remove(struct platform_device *pdev)
 {
 	struct mtk_dp *mtk_dp = platform_get_drvdata(pdev);
 
-	if (mtk_dp->dptx_wq)
+	if (mtk_dp->dptx_wq) {
+		cancel_delayed_work_sync(&mtk_dp->audio_pcm_work);
 		destroy_workqueue(mtk_dp->dptx_wq);
+	}
 
 	mutex_destroy(&dp_lock);
 	drm_connector_cleanup(&mtk_dp->conn);

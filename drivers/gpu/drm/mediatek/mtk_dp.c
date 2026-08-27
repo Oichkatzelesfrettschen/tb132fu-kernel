@@ -2602,8 +2602,8 @@ void mdrv_DPTx_I2S_Audio_Config(struct mtk_dp *mtk_dp)
 		ucFs, ucWordlength);
 
 	mhal_DPTx_Audio_PG_EN(mtk_dp, ucChannel, ucFs, false);
-	/* 12.288 MHz DPTX MCLK -> 1.536 MHz for the stereo S24 AFE path. */
-	mdrv_DPTx_I2S_Audio_Set_MDiv(mtk_dp, 7);
+	/* Preserve Lenovo's qualified DPTX audio M-clock divider. */
+	mdrv_DPTx_I2S_Audio_Set_MDiv(mtk_dp, 5);
 }
 
 void mdrv_DPTx_I2S_Audio_SDP_Channel_Setting(struct mtk_dp *mtk_dp,

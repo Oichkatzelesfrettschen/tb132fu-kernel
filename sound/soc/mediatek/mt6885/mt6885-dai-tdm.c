@@ -628,8 +628,6 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 				   DPTX_16_BIT_MASK_SFT,
 				   get_dptx_wlen(format) << DPTX_16_BIT_SFT);
 
-		/* Preserve the TB132FU DPTX/TDM pad configuration from Lenovo. */
-		regmap_write(afe->regmap, AUDIO_TOP_CON3, 0x0600000c);
 	} else {
 		switch (channels) {
 		case 1:
@@ -674,6 +672,13 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	regmap_update_bits(afe->regmap, AFE_HDMI_OUT_CON0,
 			   HDMI_CH_NUM_MASK_SFT,
 			   channels << HDMI_CH_NUM_SFT);
+
+	/*
+	 * Lenovo applies the DPTX/TDM pad configuration only after publishing
+	 * the HDMI channel count. Preserve that ordering for the DPTX path.
+	 */
+	if (tdm_id == MT6885_DAI_TDM_DPTX)
+		regmap_write(afe->regmap, AUDIO_TOP_CON3, 0x0600000c);
 	return 0;
 }
 

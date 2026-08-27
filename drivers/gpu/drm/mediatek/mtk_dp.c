@@ -3381,11 +3381,8 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 	struct mtk_dp *mtk_dp = mtk_dp_ctx_from_conn(conn);
 	int ret = 0;
 	struct drm_display_mode *mode;
-	struct drm_display_mode *preferred_mode = NULL;
 	struct drm_device *dev = conn->dev;
 	bool has_1080p60 = false;
-	bool has_720p60 = false;
-	bool has_1080p_or_larger = false;
 
 	DPTXFUNC("fakecablein %d, res %d\n", fakecablein, fakeres);
 	if (fakecablein) {
@@ -3430,50 +3427,27 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 	list_for_each_entry(mode, &conn->probed_modes, head) {
 		if (mode->hdisplay == 1920 && mode->vdisplay == 1080 &&
 		    abs(drm_mode_vrefresh(mode) - 60) <= 1) {
-			preferred_mode = mode;
 			has_1080p60 = true;
+			break;
 		}
-		if (mode->hdisplay == 1280 && mode->vdisplay == 720 &&
-		    abs(drm_mode_vrefresh(mode) - 60) <= 1)
-			has_720p60 = true;
-		if (mode->hdisplay >= 1920 && mode->vdisplay >= 1080)
-			has_1080p_or_larger = true;
 	}
 
 	/*
-	 * The legacy MediaTek HWC publishes only the connector's preferred mode
-	 * to SurfaceFlinger.  Prefer an EDID-advertised CEA 1080p60 mode.  Some
-	 * USB-C adapters expose only their highest 4K30 mode, so add the
-	 * transmitter's known-good 1080p60 timing only for a sink which already
-	 * advertises a 1080p-or-larger mode.  Never force 1080p onto a 720p-only
-	 * sink: in that case prefer its advertised 720p60 mode.  If none of these
-	 * cases applies, preserve the sink's original preferred mode unchanged.
+	 * Some USB-C adapters omit CEA 1080p60 from their EDID.  Keep the
+	 * transmitter's known-good timing available as a non-preferred fallback,
+	 * but preserve the sink's EDID preference so a qualified 4K60 adapter can
+	 * expose its native mode to Android.
 	 */
-	if (!has_1080p60 && has_1080p_or_larger) {
+	if (!has_1080p60) {
 		mode = drm_mode_duplicate(dev, &dptx_est_modes[2]);
 		if (mode) {
 			drm_mode_set_name(mode);
 			mode->type = DRM_MODE_TYPE_DRIVER;
 			drm_mode_probed_add(conn, mode);
-			preferred_mode = mode;
 			ret++;
 			DPTXMSG("%s appended 1920x1080@60 fallback\n",
 				 __func__);
 		}
-	} else if (!has_1080p60 && has_720p60) {
-		list_for_each_entry(mode, &conn->probed_modes, head) {
-			if (mode->hdisplay == 1280 && mode->vdisplay == 720 &&
-			    abs(drm_mode_vrefresh(mode) - 60) <= 1) {
-				preferred_mode = mode;
-				break;
-			}
-		}
-	}
-
-	if (preferred_mode) {
-		list_for_each_entry(mode, &conn->probed_modes, head)
-			mode->type &= ~DRM_MODE_TYPE_PREFERRED;
-		preferred_mode->type |= DRM_MODE_TYPE_PREFERRED;
 	}
 
 	return ret;
@@ -3530,16 +3504,6 @@ static enum drm_mode_status mtk_dp_conn_mode_valid(struct drm_connector *conn,
 	DPTXDBG("Hde:%d,Vde:%d,fps:%d,clk:%d,bandwidth:%d,4k60:%d\n",
 		mode->hdisplay, mode->vdisplay, mode->vrefresh, mode->clock,
 		bandwidth, dp_plat_limit[0].valid);
-
-	/*
-	 * TB132FU's legacy external-display pipeline is not stable at 4K: the
-	 * 30 Hz mode visibly flickers during composition and the 60 Hz path is
-	 * outside the qualified bandwidth.  get_modes() supplies a known-good
-	 * 1080p60 fallback for 4K-capable sinks, so reject both 4K timings here
-	 * instead of allowing the legacy HWC to select the sink's 4K default.
-	 */
-	if (mode->hdisplay == 3840 && mode->vdisplay == 2160)
-		return MODE_CLOCK_HIGH;
 
 	if (mode->clock > (dp_plat_limit[0].clock + 50000))
 		return MODE_CLOCK_HIGH;

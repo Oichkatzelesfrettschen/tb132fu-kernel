@@ -672,8 +672,7 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 
 	regmap_update_bits(afe->regmap, AFE_HDMI_OUT_CON0,
 			   HDMI_CH_NUM_MASK_SFT,
-			   /* This field counts stereo channel pairs, not samples. */
-			   DIV_ROUND_UP(channels, 2) << HDMI_CH_NUM_SFT);
+			   channels << HDMI_CH_NUM_SFT);
 	return 0;
 }
 

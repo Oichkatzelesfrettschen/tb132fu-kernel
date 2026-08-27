@@ -373,6 +373,19 @@ static int mt6885_i2s_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	return 0;
 }
 
+static int mt6885_dptx_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+				       struct snd_pcm_hw_params *params)
+{
+	dev_info(rtd->dev, "%s(), fix DPTX BE format to S24_LE\n", __func__);
+
+	/* Keep the PCM16 HDMI memif packed; use 32-bit slots only on DPTX. */
+	snd_mask_reset_range(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
+			     0, SNDRV_PCM_FORMAT_LAST);
+	params_set_format(params, SNDRV_PCM_FORMAT_S24_LE);
+
+	return 0;
+}
+
 #ifdef CONFIG_MTK_VOW_SUPPORT
 static const struct snd_pcm_hardware mt6885_mt6359_vow_hardware = {
 	.info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
@@ -1015,6 +1028,7 @@ static struct snd_soc_dai_link mt6885_mt6359_dai_links[] = {
 		.no_pcm = 1,
 		.dpcm_playback = 1,
 		.ignore_suspend = 1,
+		.be_hw_params_fixup = mt6885_dptx_hw_params_fixup,
 	},
 	/* dummy BE for ul memif to record from dl memif */
 	{

@@ -573,21 +573,7 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	unsigned int rate = params_rate(params);
 	unsigned int channels = params_channels(params);
 	snd_pcm_format_t format = params_format(params);
-	int physical_width = snd_pcm_format_physical_width(format);
-	unsigned int hdmi_dma_words = channels;
 	unsigned int tdm_con = 0;
-
-	if (physical_width <= 0)
-		return -EINVAL;
-
-	/*
-	 * AFE_HDMI_OUT_CON0 counts 32-bit DMA words per audio frame, not
-	 * logical channels, when feeding DPTX.  The original S24/S32 path has
-	 * one word per channel.  Packed S16 stereo has both channels in one
-	 * word; programming two makes the memif consume the ring at 2x speed.
-	 */
-	if (tdm_id == MT6885_DAI_TDM_DPTX)
-		hdmi_dma_words = DIV_ROUND_UP(channels * physical_width, 32);
 
 	/* calculate mclk_rate, if not set explicitly */
 	if (!tdm_priv->mclk_rate) {
@@ -600,7 +586,7 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	/* calculate bck */
 	tdm_priv->bck_rate = rate *
 			     channels *
-			     physical_width;
+			     snd_pcm_format_physical_width(format);
 
 	if (tdm_priv->bck_rate > tdm_priv->mclk_rate)
 		AUDIO_AEE("bck_rate > mclk_rate rate");
@@ -608,10 +594,10 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	if (tdm_priv->mclk_rate % tdm_priv->bck_rate != 0)
 		AUDIO_AEE("bck cannot generate");
 
-	dev_info(afe->dev, "%s(), id %d, rate %d, channels %d, format %d, mclk_rate %d, bck_rate %d, hdmi_dma_words %u\n",
+	dev_info(afe->dev, "%s(), id %d, rate %d, channels %d, format %d, mclk_rate %d, bck_rate %d\n",
 		 __func__,
 		 tdm_id, rate, channels, format,
-		 tdm_priv->mclk_rate, tdm_priv->bck_rate, hdmi_dma_words);
+		 tdm_priv->mclk_rate, tdm_priv->bck_rate);
 
 	/* set tdm */
 	tdm_con = 1 << BCK_INVERSE_SFT;
@@ -682,10 +668,10 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 		regmap_write(afe->regmap, AFE_TDM_CON2, tdm_con);
 	}
 
-	/* Program the DPTX DMA frame width calculated above. */
+	/* AFE_HDMI_OUT_CON0 encodes the number of output channels. */
 	regmap_update_bits(afe->regmap, AFE_HDMI_OUT_CON0,
 			   HDMI_CH_NUM_MASK_SFT,
-			   hdmi_dma_words << HDMI_CH_NUM_SFT);
+			   channels << HDMI_CH_NUM_SFT);
 
 	/*
 	 * Lenovo applies the DPTX/TDM pad configuration only after publishing

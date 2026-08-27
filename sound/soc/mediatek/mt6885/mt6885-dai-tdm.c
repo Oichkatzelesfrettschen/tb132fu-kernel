@@ -627,6 +627,9 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 		regmap_update_bits(afe->regmap, AFE_DPTX_CON,
 				   DPTX_16_BIT_MASK_SFT,
 				   get_dptx_wlen(format) << DPTX_16_BIT_SFT);
+
+		/* Preserve the TB132FU DPTX/TDM pad configuration from Lenovo. */
+		regmap_write(afe->regmap, AUDIO_TOP_CON3, 0x0600000c);
 	} else {
 		switch (channels) {
 		case 1:

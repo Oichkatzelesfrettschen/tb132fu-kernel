@@ -670,10 +670,12 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 		regmap_write(afe->regmap, AFE_TDM_CON2, tdm_con);
 	}
 
+	/* DPTX encodes stereo pairs; the other TDM paths encode channels. */
 	regmap_update_bits(afe->regmap, AFE_HDMI_OUT_CON0,
 			   HDMI_CH_NUM_MASK_SFT,
-			   /* The register encodes enabled stereo channel pairs. */
-			   DIV_ROUND_UP(channels, 2) << HDMI_CH_NUM_SFT);
+			   (tdm_id == MT6885_DAI_TDM_DPTX ?
+			    DIV_ROUND_UP(channels, 2) : channels) <<
+			   HDMI_CH_NUM_SFT);
 	return 0;
 }
 

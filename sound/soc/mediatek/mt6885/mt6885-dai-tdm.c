@@ -578,6 +578,8 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	/* calculate mclk_rate, if not set explicitly */
 	if (!tdm_priv->mclk_rate) {
 		tdm_priv->mclk_rate = rate * tdm_priv->mclk_multiple;
+		if (tdm_id == MT6885_DAI_TDM_DPTX)
+			tdm_priv->mclk_rate /= 2;
 		mtk_dai_tdm_cal_mclk(afe,
 				     tdm_priv,
 				     tdm_priv->mclk_rate);
@@ -587,6 +589,17 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	tdm_priv->bck_rate = rate *
 			     channels *
 			     snd_pcm_format_physical_width(format);
+
+	/*
+	 * The TB132FU DPTX path consumes the inherited MT6885 AFE clock at
+	 * twice the rate represented by its PCM pointer.  Android supplies
+	 * 48 kHz stereo S32_LE, but the hardware timestamp advances at about
+	 * 96 kHz.  Keep the PCM and DP channel-status rate unchanged while
+	 * compensating the physical DPTX MCK/BCK requests at their source.
+	 * Other TDM paths, including the internal speakers, are unaffected.
+	 */
+	if (tdm_id == MT6885_DAI_TDM_DPTX)
+		tdm_priv->bck_rate /= 2;
 
 	if (tdm_priv->bck_rate > tdm_priv->mclk_rate)
 		AUDIO_AEE("bck_rate > mclk_rate rate");

@@ -33,7 +33,6 @@ struct mtk_base_memif_data {
 	int enable_shift;
 	int hd_reg;
 	int hd_shift;
-	bool force_32bit_hd_mode_1;
 	int msb_reg;
 	int msb_shift;
 	int msb2_reg;

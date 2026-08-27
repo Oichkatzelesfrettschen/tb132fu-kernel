@@ -2536,8 +2536,6 @@ static const struct mtk_base_memif_data memif_data[MT6885_MEMIF_NUM] = {
 		.enable_shift = HDMI_OUT_ON_SFT,
 		.hd_reg = AFE_HDMI_OUT_CON0,
 		.hd_shift = HDMI_OUT_HD_MODE_SFT,
-		/* Lenovo's TB132FU AFE requires HD mode 1 for 32-bit HDMI PCM. */
-		.force_32bit_hd_mode_1 = true,
 		.agent_disable_reg = -1,
 		.agent_disable_shift = -1,
 		.msb_reg = -1,

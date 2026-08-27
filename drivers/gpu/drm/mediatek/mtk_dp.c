@@ -3381,8 +3381,13 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 	struct mtk_dp *mtk_dp = mtk_dp_ctx_from_conn(conn);
 	int ret = 0;
 	struct drm_display_mode *mode;
+	struct drm_display_mode *preferred_mode = NULL;
+	struct drm_display_mode *mode_1080p60 = NULL;
+	struct drm_display_mode *mode_4k60 = NULL;
 	struct drm_device *dev = conn->dev;
 	bool has_1080p60 = false;
+	bool has_1080p_or_larger = false;
+	bool qualified_4k60 = mtk_dp->has_dsc && mtk_dp->has_fec;
 
 	DPTXFUNC("fakecablein %d, res %d\n", fakecablein, fakeres);
 	if (fakecablein) {
@@ -3428,26 +3433,51 @@ static int mtk_dp_conn_get_modes(struct drm_connector *conn)
 		if (mode->hdisplay == 1920 && mode->vdisplay == 1080 &&
 		    abs(drm_mode_vrefresh(mode) - 60) <= 1) {
 			has_1080p60 = true;
-			break;
+			mode_1080p60 = mode;
 		}
+		if (mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
+		    abs(drm_mode_vrefresh(mode) - 60) <= 1)
+			mode_4k60 = mode;
+		if (mode->hdisplay >= 1920 && mode->vdisplay >= 1080)
+			has_1080p_or_larger = true;
 	}
 
 	/*
-	 * Some USB-C adapters omit CEA 1080p60 from their EDID.  Keep the
-	 * transmitter's known-good timing available as a non-preferred fallback,
-	 * but preserve the sink's EDID preference so a qualified 4K60 adapter can
-	 * expose its native mode to Android.
+	 * TB132FU's transmitter is limited to two DP lanes.  Its 4K60 interface
+	 * path is DSC-only, while the uncompressed 4K30 path has repeatedly shown
+	 * physical white-line corruption and a black-screen lockup.  Select 4K60
+	 * only when the trained sink exposes the complete DSC/FEC transport.
+	 * Otherwise prefer the physically qualified 1080p60 path for a sink which
+	 * already advertises 1080p or larger.  Preserve a smaller sink's own EDID
+	 * preference instead of forcing a timing it did not advertise.
 	 */
-	if (!has_1080p60) {
+	if (!has_1080p60 && has_1080p_or_larger) {
 		mode = drm_mode_duplicate(dev, &dptx_est_modes[2]);
 		if (mode) {
 			drm_mode_set_name(mode);
 			mode->type = DRM_MODE_TYPE_DRIVER;
 			drm_mode_probed_add(conn, mode);
+			mode_1080p60 = mode;
 			ret++;
 			DPTXMSG("%s appended 1920x1080@60 fallback\n",
 				 __func__);
 		}
+	}
+
+	if (qualified_4k60 && mode_4k60)
+		preferred_mode = mode_4k60;
+	else if (has_1080p_or_larger && mode_1080p60)
+		preferred_mode = mode_1080p60;
+
+	if (preferred_mode) {
+		list_for_each_entry(mode, &conn->probed_modes, head)
+			mode->type &= ~DRM_MODE_TYPE_PREFERRED;
+		preferred_mode->type |= DRM_MODE_TYPE_PREFERRED;
+		DPTXMSG("%s selected %dx%d@%d preferred (DSC:%d FEC:%d)\n",
+			 __func__, preferred_mode->hdisplay,
+			 preferred_mode->vdisplay,
+			 drm_mode_vrefresh(preferred_mode),
+			 mtk_dp->has_dsc, mtk_dp->has_fec);
 	}
 
 	return ret;
@@ -3504,6 +3534,11 @@ static enum drm_mode_status mtk_dp_conn_mode_valid(struct drm_connector *conn,
 	DPTXDBG("Hde:%d,Vde:%d,fps:%d,clk:%d,bandwidth:%d,4k60:%d\n",
 		mode->hdisplay, mode->vdisplay, mode->vrefresh, mode->clock,
 		bandwidth, dp_plat_limit[0].valid);
+
+	/* Never expose TB132FU's physically rejected uncompressed 4K30 path. */
+	if (mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
+	    abs(drm_mode_vrefresh(mode) - 30) <= 1)
+		return MODE_BAD_VSCAN;
 
 	if (mode->clock > (dp_plat_limit[0].clock + 50000))
 		return MODE_CLOCK_HIGH;

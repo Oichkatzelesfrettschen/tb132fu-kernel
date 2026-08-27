@@ -2602,7 +2602,8 @@ void mdrv_DPTx_I2S_Audio_Config(struct mtk_dp *mtk_dp)
 		ucFs, ucWordlength);
 
 	mhal_DPTx_Audio_PG_EN(mtk_dp, ucChannel, ucFs, false);
-	mdrv_DPTx_I2S_Audio_Set_MDiv(mtk_dp, 5);
+	/* 12.288 MHz DPTX MCLK -> 3.072 MHz for 48 kHz stereo/32-bit slots. */
+	mdrv_DPTx_I2S_Audio_Set_MDiv(mtk_dp, 6);
 }
 
 void mdrv_DPTx_I2S_Audio_SDP_Channel_Setting(struct mtk_dp *mtk_dp,

@@ -920,7 +920,8 @@ int mtk_memif_set_format(struct mtk_base_afe *afe,
 		break;
 	case SNDRV_PCM_FORMAT_S32_LE:
 	case SNDRV_PCM_FORMAT_U32_LE:
-		if (memif_32bit_supported)
+		if (memif_32bit_supported &&
+		    !memif->data->force_32bit_hd_mode_1)
 			hd_audio = 2;
 		else
 			hd_audio = 1;

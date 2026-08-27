@@ -2602,12 +2602,7 @@ void mdrv_DPTx_I2S_Audio_Config(struct mtk_dp *mtk_dp)
 		ucFs, ucWordlength);
 
 	mhal_DPTx_Audio_PG_EN(mtk_dp, ucChannel, ucFs, false);
-	/*
-	 * TB132FU feeds this DPTX block an audio master clock that requires the
-	 * /4 setting.  The inherited /2 value consumes 48 kHz PCM at almost
-	 * exactly twice real time, producing chipmunk audio and broken A/V pacing.
-	 */
-	mdrv_DPTx_I2S_Audio_Set_MDiv(mtk_dp, 6);
+	mdrv_DPTx_I2S_Audio_Set_MDiv(mtk_dp, 5);
 }
 
 void mdrv_DPTx_I2S_Audio_SDP_Channel_Setting(struct mtk_dp *mtk_dp,

@@ -7,6 +7,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 #include <linux/arm-smccc.h> /* for Kernel Native SMC API */
@@ -698,6 +699,21 @@ int mt6885_mck_enable(struct mtk_base_afe *afe, int mck_id, int rate)
 	int div_clk_id = mck_div[mck_id].div_clk_id;
 	int div;
 	int ret;
+	unsigned int auddiv0 = 0;
+	unsigned int auddiv2 = 0;
+	bool trace_i2s4 = mck_id == MT6885_I2S4_MCK ||
+			  mck_id == MT6885_I2S4_BCK;
+
+	if (trace_i2s4) {
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_0, &auddiv0);
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_2, &auddiv2);
+		dev_info(afe->dev,
+			 "TB132FU_I2S4 enable-before id=%d req=%d clk=%s rate=%lu count=%u auddiv0=0x%08x auddiv2=0x%08x\n",
+			 mck_id, rate, aud_clks[div_clk_id],
+			 clk_get_rate(afe_priv->clk[div_clk_id]),
+			 __clk_get_enable_count(afe_priv->clk[div_clk_id]),
+			 auddiv0, auddiv2);
+	}
 
 	/* select apll */
 	if (m_sel_id >= 0) {
@@ -730,6 +746,17 @@ int mt6885_mck_enable(struct mtk_base_afe *afe, int mck_id, int rate)
 			__func__, aud_clks[div_clk_id],
 			rate, ret);
 		return ret;
+	}
+
+	if (trace_i2s4) {
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_0, &auddiv0);
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_2, &auddiv2);
+		dev_info(afe->dev,
+			 "TB132FU_I2S4 enable-after id=%d req=%d clk=%s rate=%lu count=%u auddiv0=0x%08x auddiv2=0x%08x\n",
+			 mck_id, rate, aud_clks[div_clk_id],
+			 clk_get_rate(afe_priv->clk[div_clk_id]),
+			 __clk_get_enable_count(afe_priv->clk[div_clk_id]),
+			 auddiv0, auddiv2);
 	}
 
 	/* below will be deprecated, i2s5 not full support by ccf now */
@@ -786,10 +813,36 @@ void mt6885_mck_disable(struct mtk_base_afe *afe, int mck_id)
 	struct mt6885_afe_private *afe_priv = afe->platform_priv;
 	int m_sel_id = mck_div[mck_id].m_sel_id;
 	int div_clk_id = mck_div[mck_id].div_clk_id;
+	unsigned int auddiv0 = 0;
+	unsigned int auddiv2 = 0;
+	bool trace_i2s4 = mck_id == MT6885_I2S4_MCK ||
+			  mck_id == MT6885_I2S4_BCK;
+
+	if (trace_i2s4) {
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_0, &auddiv0);
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_2, &auddiv2);
+		dev_info(afe->dev,
+			 "TB132FU_I2S4 disable-before id=%d clk=%s rate=%lu count=%u auddiv0=0x%08x auddiv2=0x%08x\n",
+			 mck_id, aud_clks[div_clk_id],
+			 clk_get_rate(afe_priv->clk[div_clk_id]),
+			 __clk_get_enable_count(afe_priv->clk[div_clk_id]),
+			 auddiv0, auddiv2);
+	}
 
 	clk_disable_unprepare(afe_priv->clk[div_clk_id]);
 	if (m_sel_id >= 0)
 		clk_disable_unprepare(afe_priv->clk[m_sel_id]);
+
+	if (trace_i2s4) {
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_0, &auddiv0);
+		regmap_read(afe_priv->topckgen, CLK_AUDDIV_2, &auddiv2);
+		dev_info(afe->dev,
+			 "TB132FU_I2S4 disable-after id=%d clk=%s rate=%lu count=%u auddiv0=0x%08x auddiv2=0x%08x\n",
+			 mck_id, aud_clks[div_clk_id],
+			 clk_get_rate(afe_priv->clk[div_clk_id]),
+			 __clk_get_enable_count(afe_priv->clk[div_clk_id]),
+			 auddiv0, auddiv2);
+	}
 }
 
 int mt6885_init_clock(struct mtk_base_afe *afe)

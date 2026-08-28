@@ -40,11 +40,13 @@ The qualified expanded `.config` has SHA-256:
 c1730b517e0c36dc9641925ee3eee7bc9dceb2a2143263c6301c6a59abce5fe7
 ```
 
-Pure Pixel release engineering additionally rebuilds the matching external
-connectivity modules, creates the recovery-as-boot image with the qualified
-ramdisk and DTB, and verifies module CRCs and vermagic against the resulting
-kernel release. Changing any `localversion*` file requires that complete module
-step; replacing only the kernel Image is not a supported release procedure.
+Pure Pixel release engineering creates the recovery-as-boot image with the
+qualified ramdisk and DTB and verifies every retained external connectivity
+module's CRC and vermagic against the resulting kernel release. The accepted
+ramdisk modules already target `4.19.325-cip135-st19+`; K52 restores that exact
+kernel/module identity. Changing any `localversion*` file requires this complete
+module audit; replacing only the kernel Image is not a supported release
+procedure.
 
 ## Historical reproducibility
 

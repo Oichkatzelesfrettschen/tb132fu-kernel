@@ -1,9 +1,38 @@
 # Lenovo TB132FU kernel
 
 This repository contains the source history for the Lenovo TB132FU kernel
-bring-up and Android compatibility work. The current boot-validated source
-checkpoint is Linux 4.19.325-cip135-st19 with the TB132FU vendor hardware
-support retained.
+bring-up and Android compatibility work. The Pure Pixel 17 R5 release source
+is Linux 4.19.325-cip135-st19 with the TB132FU vendor hardware support
+retained. The separate TB132FU build counter is Kernel #52.
+
+## Pure Pixel 17 R5 checkpoint
+
+Kernel #52 is the release-identity successor to the physically qualified K51
+implementation. It preserves K51's kernel behavior and corrects only its
+version provenance: `-cip135` and `-st19` are the imported CIP release and
+staging-tree suffixes, while `#52` is supplied by `KBUILD_BUILD_VERSION` as the
+TB132FU build counter. The resulting release identity is
+`4.19.325-cip135-st19+ #52`.
+
+R5 adds the MediaTek USB-C DisplayPort transmitter path and restores Lenovo's
+TB132FU DPTX audio programming. The accepted policy rejects the physically
+unstable uncompressed 4K30 mode, allows 4K60 only when the trained link reports
+both DSC and FEC, and otherwise selects the physically qualified 1080p60
+fallback. The matching R5 userspace stack produces stable 48 kHz HDMI stereo
+at normal pitch with independent left and right channels.
+
+Kernel #52 also retains the R4 BQ27541 battery-health reporting, negotiated
+charger reporting, native 80 percent charge limit across both charging paths,
+and GT9768 rear-camera autofocus. It keeps the working PRC GC08A3 camera path
+unchanged and restores Lenovo's alternate S5K4H7 sensor implementation for
+compiled ROW coverage. The alternate S5K4H7 hardware path still requires
+physical confirmation on an affected tablet.
+
+The historical K20 through K51 local versions identify development boots.
+They do not represent newer CIP `-st` releases. K49 remains the accepted HDMI
+audio rollback point, K51 is the physically qualified final display-policy
+implementation, and K52 is the corrected public R5 release identity built from
+that implementation.
 
 ## Pure Pixel 17 R2 checkpoint
 
@@ -44,6 +73,9 @@ tablet has not completed the same physical qualification matrix.
 
 | Tag | Kernel | Status |
 | --- | --- | --- |
+| `tb132fu-purepixel17-r5-k52` | 4.19.325-cip135-st19 | Pure Pixel 17 R5 Kernel #52 release source |
+| `tb132fu-purepixel17-r5-k51` | 4.19.325-cip135-st51 | Physically qualified R5 development predecessor; suffix retained as history |
+| `tb132fu-purepixel17-r4-k17` | 4.19.325-cip135-st19 | Pure Pixel 17 R4 Kernel #17 |
 | R2 branch `purepixel17-tb132fu-r2-kernel` | 4.19.325-cip135-st19 | Android 17 R2 kernel build 14 |
 | `tb132fu-purepixel17-r1-k13` | 4.19.325-cip135-st19 | Android 17 R1 kernel build 13 |
 | `tb132fu-v84-4.19.325-cip135` | 4.19.325-cip135-st19 | Earlier Android 16 checkpoint |
@@ -51,10 +83,11 @@ tablet has not completed the same physical qualification matrix.
 | `tb132fu-v82-4.19.300` | 4.19.300 | Known-good rollback checkpoint |
 | `tb132fu-v77-4.19.200` | 4.19.200 | Earlier known-good checkpoint |
 
-The Android 17 R1 development branch is
-`tb132fu-android17-cip135-k13-audio-slot-controls`. Earlier matching source
-branches are `tb132fu-4.19.325-cip135`, `tb132fu-4.19.325`, and
-`tb132fu-4.19.300`; their branches and tags are retained for history.
+The current R5 release branch is `tb132fu-purepixel17-r5-k52`. The Android 17
+R1 development branch is `tb132fu-android17-cip135-k13-audio-slot-controls`.
+Earlier matching source branches are `tb132fu-4.19.325-cip135`,
+`tb132fu-4.19.325`, and `tb132fu-4.19.300`; their branches and tags are retained
+for history.
 
 ## Earlier Android 16 validation on 4.19.325-cip135-st19
 
@@ -81,9 +114,10 @@ that generic GSI behavior.
 
 The tree combines the Motorola/MediaTek 4.19 vendor implementation used as the
 newer vendor base, Lenovo TB132FU-specific hardware behavior recovered from the
-available Lenovo source and running device, Linux stable updates through
-4.19.325, and the CIP v4.19.325-cip135 maintenance checkpoint. Hardware-sensitive
-conflicts are resolved conservatively and audited against the working tablet.
+available Lenovo 4.14 source and running device, Linux stable updates through
+4.19.325, and the CIP v4.19.325-cip135 maintenance checkpoint based on the
+v4.19-st19 staging tree. Hardware-sensitive conflicts are resolved
+conservatively and audited against the working tablet.
 
 This is a downstream vendor kernel, not a byte-identical vanilla stable tree.
 The version number does not guarantee that every known or unknown vulnerability

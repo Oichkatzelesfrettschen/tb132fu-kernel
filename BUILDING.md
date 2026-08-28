@@ -1,19 +1,22 @@
-# Building the TB132FU Android 17 R1 kernel
+# Building the TB132FU Pure Pixel 17 R5 kernel
 
 ## Exact source and toolchain
 
-- release-source tag: `tb132fu-purepixel17-r1-k13`
-- exact kernel implementation commit: `5b0f70f39eff047774cf24d61301f92506330113`
+- release-source branch: `tb132fu-purepixel17-r5-k52`
 - kernel release: `4.19.325-cip135-st19+`
 - toolchain: Android Clang `r383902` (clang 11.0.1, Android build 6443078)
 - architecture: arm64
 - defconfig: `tb132fu_android17_defconfig`
-- build number: 13
+- TB132FU build number: 52
 
-The release-source tag contains the exact implementation commit plus the
-tracked defconfig and public documentation. The defconfig was generated from
-the accepted R1 `.config`; these publication additions change no kernel
-behavior and make the build configuration reproducible.
+Kernel #52 preserves the physically qualified K51 HDMI audio and DisplayPort
+implementation. Its source correction restores CIP's imported `-st19` staging
+suffix and keeps the independent TB132FU counter in `KBUILD_BUILD_VERSION`.
+The version string and build counter therefore have separate meanings:
+
+```text
+4.19.325-cip135-st19+ #52
+```
 
 ## Build
 
@@ -27,30 +30,36 @@ export OUT_DIR=/path/to/an/empty/output-directory
 ```
 
 `OUT_DIR` defaults to `out` below the source tree. `JOBS` defaults to the host
-CPU count and `KBUILD_BUILD_VERSION` defaults to `13`. The helper produces the
+CPU count and `KBUILD_BUILD_VERSION` defaults to `52`. The helper produces the
 kernel Image, compressed Image, DTBs, and in-tree modules. It verifies the
 expanded configuration before compiling.
 
-The accepted expanded `.config` has SHA-256:
+The qualified expanded `.config` has SHA-256:
 
 ```text
-6c6920de38ca9d55e1a7b4cbc74fc0cdbb9c5ab4b402c5fbec35201dfa7c5f43
+c1730b517e0c36dc9641925ee3eee7bc9dceb2a2143263c6301c6a59abce5fe7
 ```
 
-The accepted R1 `Module.symvers` has 12,233 entries and SHA-256:
+Pure Pixel release engineering additionally rebuilds the matching external
+connectivity modules, creates the recovery-as-boot image with the qualified
+ramdisk and DTB, and verifies module CRCs and vermagic against the resulting
+kernel release. Changing any `localversion*` file requires that complete module
+step; replacing only the kernel Image is not a supported release procedure.
 
-```text
-75ba5cd713a4a4d0ec2472bdfd67e5639ee3eb72a814394c2099d427c829269a
-```
+## Historical reproducibility
 
-The module ABI hash is a release-verification value. It is sensitive to the
-exact toolchain and complete build environment.
+The R1 source checkpoint remains available at
+`tb132fu-purepixel17-r1-k13`. It used the same Android Clang toolchain and the
+earlier accepted configuration and module-ABI receipts documented on that
+branch. R2 Kernel #14 and R4 Kernel #17 likewise remain available on their
+named branches and tags. Do not change those historical records when building
+R5.
 
 ## Boot-image boundary
 
 The generated `arch/arm64/boot/Image.gz` is not a flashable Android boot image.
-A working TB132FU boot image also requires the matching ramdisk and DTB, boot
-header v2 geometry, command line, 64 MiB partition sizing, and AVB metadata.
-Those inputs belong to the matching device/ROM release and are intentionally
-not embedded in this kernel source repository. Never flash a standalone Image
-or an image assembled for another device.
+A working TB132FU boot image also requires the matching ramdisk, DTB, external
+connectivity modules, boot header v2 geometry, command line, 64 MiB partition
+sizing, and AVB metadata. Those inputs belong to the matching device/ROM
+release and are intentionally not embedded in this kernel source repository.
+Never flash a standalone Image or an image assembled for another device.

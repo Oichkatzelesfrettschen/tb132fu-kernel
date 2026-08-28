@@ -6,8 +6,8 @@ source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 out_dir=${OUT_DIR:-$source_dir/out}
 clang_dir=${CLANG_DIR:-}
 jobs=${JOBS:-$(nproc)}
-build_version=${KBUILD_BUILD_VERSION:-13}
-expected_config_sha=6c6920de38ca9d55e1a7b4cbc74fc0cdbb9c5ab4b402c5fbec35201dfa7c5f43
+build_version=${KBUILD_BUILD_VERSION:-52}
+expected_config_sha=c1730b517e0c36dc9641925ee3eee7bc9dceb2a2143263c6301c6a59abce5fe7
 
 if [[ -z "$clang_dir" || ! -x "$clang_dir/bin/clang" ]]; then
     echo 'Set CLANG_DIR to the Android clang-r383902 prebuilt root.' >&2
@@ -42,7 +42,7 @@ make "${make_args[@]}" tb132fu_android17_defconfig
 
 observed_config_sha=$(sha256sum "$out_dir/.config" | awk '{print $1}')
 if [[ "$observed_config_sha" != "$expected_config_sha" ]]; then
-    echo 'Expanded kernel configuration does not match Pure Pixel 17 R1.' >&2
+    echo 'Expanded kernel configuration does not match the qualified Pure Pixel 17 baseline.' >&2
     echo "Expected: $expected_config_sha" >&2
     echo "Observed: $observed_config_sha" >&2
     exit 1

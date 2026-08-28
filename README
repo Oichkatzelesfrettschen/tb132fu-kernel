@@ -6,12 +6,7 @@ It is Linux 4.19.325-cip135-st19 with the tablet-specific display, touch, pen,
 camera, charging, connectivity, suspend, speaker, accessory, and USB-C
 DisplayPort support retained.
 
-Pure Pixel 17 R5 Kernel #52 preserves the physically qualified K51 display and
-HDMI-audio implementation while restoring the imported CIP ``-st19`` staging
-suffix. The TB132FU build counter is carried independently as ``#52`` through
-``KBUILD_BUILD_VERSION``; it is not encoded by changing CIP's
-``localversion-st``. The R4 Kernel #17, R2 Kernel #14, and R1 Kernel #13
-checkpoints remain available on their named branches and tags.
+Pure Pixel 17 R5 ships this branch as ``4.19.325-cip135-st19+ #52``.
 
 See ``TB132FU.md`` for validation coverage, lineage, and flashing warnings.
 See ``BUILDING.md`` and ``build-tb132fu.sh`` for the supported source-build

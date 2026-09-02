@@ -1,12 +1,13 @@
 Lenovo TB132FU kernel
 =====================
 
-This branch is the Lenovo TB132FU downstream kernel used by Pure Pixel 17 R5.
-It is Linux 4.19.325-cip135-st19 with the tablet-specific display, touch, pen,
-camera, charging, connectivity, suspend, speaker, accessory, and USB-C
-DisplayPort support retained.
+This branch is the Lenovo TB132FU downstream kernel used by Pure Pixel 17 R5
+and R6. It is Linux 4.19.325-cip135-st19 with the tablet-specific display,
+touch, pen, camera, charging, connectivity, suspend, speaker, accessory, and
+USB-C DisplayPort support retained.
 
-Pure Pixel 17 R5 ships this branch as ``4.19.325-cip135-st19+ #52``.
+Pure Pixel 17 R6 retains the physically qualified R5 implementation unchanged
+and ships it as ``4.19.325-cip135-st19+ #52``.
 
 See ``TB132FU.md`` for validation coverage, lineage, and flashing warnings.
 See ``BUILDING.md`` and ``build-tb132fu.sh`` for the supported source-build

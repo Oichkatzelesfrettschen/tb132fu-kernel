@@ -1,11 +1,11 @@
 # Lenovo TB132FU kernel
 
 This repository contains the source history for the Lenovo TB132FU kernel
-bring-up and Android compatibility work. The Pure Pixel 17 R5 release source
-is Linux 4.19.325-cip135-st19 with the TB132FU vendor hardware support
+bring-up and Android compatibility work. The Pure Pixel 17 R5/R6 release
+source is Linux 4.19.325-cip135-st19 with the TB132FU vendor hardware support
 retained. The separate TB132FU build counter is Kernel #52.
 
-## Pure Pixel 17 R5 checkpoint
+## Pure Pixel 17 R5/R6 checkpoint
 
 Kernel #52 is the release-identity successor to the physically qualified K51
 implementation. It preserves K51's kernel behavior and corrects only its
@@ -32,7 +32,8 @@ The historical K20 through K51 local versions identify development boots.
 They do not represent newer CIP `-st` releases. K49 remains the accepted HDMI
 audio rollback point, K51 is the physically qualified final display-policy
 implementation, and K52 is the corrected public R5 release identity built from
-that implementation.
+that implementation. Pure Pixel 17 R6 reuses K52 byte-for-byte; R6 does not
+claim a new kernel implementation or build number.
 
 ## Pure Pixel 17 R2 checkpoint
 
@@ -73,6 +74,7 @@ tablet has not completed the same physical qualification matrix.
 
 | Tag | Kernel | Status |
 | --- | --- | --- |
+| `tb132fu-purepixel17-r6-k52` | 4.19.325-cip135-st19 | Pure Pixel 17 R6 documentation branch; kernel implementation unchanged from R5 K52 |
 | `tb132fu-purepixel17-r5-k52` | 4.19.325-cip135-st19 | Pure Pixel 17 R5 Kernel #52 release source |
 | `tb132fu-purepixel17-r5-k51` | 4.19.325-cip135-st51 | Physically qualified R5 development predecessor; suffix retained as history |
 | `tb132fu-purepixel17-r4-k17` | 4.19.325-cip135-st19 | Pure Pixel 17 R4 Kernel #17 |
@@ -83,7 +85,8 @@ tablet has not completed the same physical qualification matrix.
 | `tb132fu-v82-4.19.300` | 4.19.300 | Known-good rollback checkpoint |
 | `tb132fu-v77-4.19.200` | 4.19.200 | Earlier known-good checkpoint |
 
-The current R5 release branch is `tb132fu-purepixel17-r5-k52`. The Android 17
+The current R6 release branch is `tb132fu-purepixel17-r6-k52`; the exact R5
+kernel implementation remains at `tb132fu-purepixel17-r5-k52`. The Android 17
 R1 development branch is `tb132fu-android17-cip135-k13-audio-slot-controls`.
 Earlier matching source branches are `tb132fu-4.19.325-cip135`,
 `tb132fu-4.19.325`, and `tb132fu-4.19.300`; their branches and tags are retained

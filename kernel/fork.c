@@ -2581,6 +2581,9 @@ void __init proc_caches_init(void)
 	 * can have, taking hotplug into account (nr_cpu_ids).
 	 */
 	mm_size = sizeof(struct mm_struct) + cpumask_size();
+#ifdef CONFIG_MMU_NOTIFIER
+	mm_size += sizeof(struct mmu_notifier_mm *);
+#endif
 
 	mm_cachep = kmem_cache_create_usercopy("mm_struct",
 			mm_size, ARCH_MIN_MMSTRUCT_ALIGN,

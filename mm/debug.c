@@ -165,7 +165,7 @@ void dump_mm(const struct mm_struct *mm)
 #endif
 		mm->exe_file,
 #ifdef CONFIG_MMU_NOTIFIER
-		mm->mmu_notifier_mm,
+		mm_mmu_notifier_mm(mm),
 #endif
 #ifdef CONFIG_NUMA_BALANCING
 		mm->numa_next_scan, mm->numa_scan_offset, mm->numa_scan_seq,

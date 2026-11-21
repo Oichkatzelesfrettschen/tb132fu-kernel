@@ -479,9 +479,6 @@ struct mm_struct {
 
 		/* store ref to file /proc/<pid>/exe symlink points to */
 		struct file __rcu *exe_file;
-#ifdef CONFIG_MMU_NOTIFIER
-		struct mmu_notifier_mm *mmu_notifier_mm;
-#endif
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) && !USE_SPLIT_PMD_PTLOCKS
 		pgtable_t pmd_huge_pte; /* protected by page_table_lock */
 #endif
@@ -561,6 +558,25 @@ static inline cpumask_t *mm_cpumask(struct mm_struct *mm)
 {
 	return (struct cpumask *)&mm->cpu_bitmap;
 }
+
+#ifdef CONFIG_MMU_NOTIFIER
+struct mmu_notifier_mm;
+
+/*
+ * The mmu_notifier_mm pointer occupies the word after the mm_cpumask, which
+ * keeps cpu_bitmap at its offset in struct mm_struct. mm_cachep sizes the
+ * word; init_mm and efi_mm reserve it with the extra cpu_bitmap element.
+ */
+static inline struct mmu_notifier_mm **
+mm_mmu_notifier_slot(const struct mm_struct *mm)
+{
+	unsigned long slot = (unsigned long)mm;
+
+	slot += offsetof(struct mm_struct, cpu_bitmap) + cpumask_size();
+	return (struct mmu_notifier_mm **)slot;
+}
+#define mm_mmu_notifier_mm(mm) (*mm_mmu_notifier_slot(mm))
+#endif
 
 #ifdef CONFIG_LRU_GEN
 

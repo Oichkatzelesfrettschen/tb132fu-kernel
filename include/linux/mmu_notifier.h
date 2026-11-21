@@ -19,7 +19,7 @@ struct mmu_notifier_ops;
 
 /*
  * The mmu notifier_mm structure is allocated and installed in
- * mm->mmu_notifier_mm inside the mm_take_all_locks() protected
+ * mm_mmu_notifier_mm(mm) inside the mm_take_all_locks() protected
  * critical section and it's released only when mm_count reaches zero
  * in mmdrop().
  */
@@ -217,7 +217,7 @@ struct mmu_notifier {
 
 static inline int mm_has_notifiers(struct mm_struct *mm)
 {
-	return unlikely(mm->mmu_notifier_mm);
+	return unlikely(mm_mmu_notifier_mm(mm));
 }
 
 extern int mmu_notifier_register(struct mmu_notifier *mn,
@@ -327,7 +327,7 @@ static inline void mmu_notifier_invalidate_range(struct mm_struct *mm,
 
 static inline void mmu_notifier_mm_init(struct mm_struct *mm)
 {
-	mm->mmu_notifier_mm = NULL;
+	mm_mmu_notifier_mm(mm) = NULL;
 }
 
 static inline void mmu_notifier_mm_destroy(struct mm_struct *mm)

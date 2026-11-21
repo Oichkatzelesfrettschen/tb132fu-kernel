@@ -271,9 +271,9 @@ static struct mmu_notifier *mmu_find_ops(struct mm_struct *mm,
 {
 	struct mmu_notifier *mn, *gru_mn = NULL;
 
-	if (mm->mmu_notifier_mm) {
+	if (mm_mmu_notifier_mm(mm)) {
 		rcu_read_lock();
-		hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list,
+		hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list,
 					 hlist)
 		    if (mn->ops == ops) {
 			gru_mn = mn;

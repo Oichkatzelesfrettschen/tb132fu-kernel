@@ -2,6 +2,7 @@
 #include <linux/cred.h>
 #include <linux/device.h>
 #include <linux/dma-buf.h>
+#include <linux/dma-mapping.h>
 #include <linux/highmem.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -353,6 +354,12 @@ static int __init udmabuf_dev_init(void)
 		return ret;
 	}
 
+	/*
+	 * A misc device has no bus to assign DMA operations; without them
+	 * dma_supported() rejects every mask and the sg_table mapping in
+	 * begin_cpu_access fails.
+	 */
+	arch_setup_dma_ops(udmabuf_misc.this_device, 0, 0, NULL, false);
 	ret = dma_coerce_mask_and_coherent(udmabuf_misc.this_device,
 					   DMA_BIT_MASK(64));
 	if (ret < 0) {

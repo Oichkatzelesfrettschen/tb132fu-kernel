@@ -93,6 +93,7 @@ struct wrap_content_dmabuf {
 	 * visible to other threads.
 	 */
 	void *vaddr;
+	bool stitched;
 	bool writable;
 };
 
@@ -131,6 +132,7 @@ struct wrap_io_req {
 struct dmabuf_load_param {
 	struct dma_buf *dmabuf;
 	void *vaddr;
+	bool stitched;
 	struct wrap_io_ctx io_ctx;
 };
 
@@ -170,9 +172,53 @@ static void dmabuf_get_content_attribs(struct wrap_content *content,
 }
 
 /*
- * The exporter provides the kernel mapping through its vmap operation; an exporter without one
- * cannot have its content cleared or loaded.
+ * Exporters without a vmap operation still provide a kernel mapping per page. When every page
+ * sits in the linear map, the pages are stitched into one contiguous mapping instead.
  */
+static void *wrap_dmabuf_vmap(struct dma_buf *dmabuf, bool *stitched)
+{
+	unsigned long nr_pages = DIV_ROUND_UP(dmabuf->size, PAGE_SIZE);
+	struct page **pages;
+	void *vaddr;
+	unsigned long i;
+
+	*stitched = false;
+	vaddr = dma_buf_vmap(dmabuf);
+	if (vaddr)
+		return vaddr;
+
+	pages = kvmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL);
+	if (!pages)
+		return NULL;
+
+	for (i = 0; i < nr_pages; i++) {
+		void *kaddr = dma_buf_kmap(dmabuf, i);
+
+		if (IS_ERR_OR_NULL(kaddr))
+			goto out_free;
+		if (!virt_addr_valid(kaddr)) {
+			dma_buf_kunmap(dmabuf, i, kaddr);
+			goto out_free;
+		}
+		pages[i] = virt_to_page(kaddr);
+		dma_buf_kunmap(dmabuf, i, kaddr);
+	}
+
+	vaddr = vmap(pages, nr_pages, VM_MAP, PAGE_KERNEL);
+	*stitched = !!vaddr;
+out_free:
+	kvfree(pages);
+	return vaddr;
+}
+
+static void wrap_dmabuf_vunmap(struct dma_buf *dmabuf, void *vaddr, bool stitched)
+{
+	if (stitched)
+		vunmap(vaddr);
+	else
+		dma_buf_vunmap(dmabuf, vaddr);
+}
+
 static int dmabuf_content_clear_prepare(struct wrap_content *content)
 {
 	struct wrap_content_dmabuf *dmabuf_content;
@@ -186,7 +232,7 @@ static int dmabuf_content_clear_prepare(struct wrap_content *content)
 	if (ret)
 		return ret;
 
-	vaddr = dma_buf_vmap(dmabuf);
+	vaddr = wrap_dmabuf_vmap(dmabuf, &dmabuf_content->stitched);
 	if (!vaddr) {
 		dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 		return -EINVAL;
@@ -212,7 +258,7 @@ static void dmabuf_content_clear_complete(struct wrap_content *content)
 	dmabuf_content = container_of(content, struct wrap_content_dmabuf, content);
 	dmabuf = dmabuf_content->dmabuf;
 
-	dma_buf_vunmap(dmabuf, dmabuf_content->vaddr);
+	wrap_dmabuf_vunmap(dmabuf, dmabuf_content->vaddr, dmabuf_content->stitched);
 	dmabuf_content->vaddr = NULL;
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 }
@@ -672,7 +718,7 @@ static int dmabuf_content_load_prepare(struct file *file, struct dma_buf *dmabuf
 	if (ret)
 		return ret;
 
-	vaddr = dma_buf_vmap(dmabuf);
+	vaddr = wrap_dmabuf_vmap(dmabuf, &param->stitched);
 	if (!vaddr) {
 		ret = -EINVAL;
 		goto err_end_access;
@@ -687,7 +733,7 @@ static int dmabuf_content_load_prepare(struct file *file, struct dma_buf *dmabuf
 	return 0;
 
 err_unmap:
-	dma_buf_vunmap(dmabuf, vaddr);
+	wrap_dmabuf_vunmap(dmabuf, vaddr, param->stitched);
 err_end_access:
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	return ret;
@@ -696,7 +742,7 @@ err_end_access:
 static void dmabuf_content_load_complete(struct dmabuf_load_param *param)
 {
 	wrap_io_complete(&param->io_ctx);
-	dma_buf_vunmap(param->dmabuf, param->vaddr);
+	wrap_dmabuf_vunmap(param->dmabuf, param->vaddr, param->stitched);
 	dma_buf_end_cpu_access(param->dmabuf, DMA_BIDIRECTIONAL);
 }
 

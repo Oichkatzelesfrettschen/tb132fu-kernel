@@ -13,18 +13,26 @@
 #include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/iosys-map.h>
 #include <linux/miscdevice.h>
+#include <linux/moduleparam.h>
+#include <linux/mount.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
+#include <linux/overflow.h>
 #include <linux/pagemap.h>
 #include <linux/poll.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/task.h>
 #include <linux/scatterlist.h>
+#include <linux/security.h>
 #include <linux/seq_file.h>
+#include <linux/sizes.h>
+#include <linux/dcache.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
 #include <linux/uio.h>
+#include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/wrapfd.h>
 #include <uapi/linux/wrapfd.h>
@@ -32,8 +40,7 @@
 /* 1 buffer for the start, and at most 2 at the end. */
 #define MAX_NR_BOUNCE_BUFS 3
 
-/* 1 per bounce page (3), and 1 for content read directly into the buffer. */
-#define MAX_NR_KVECS (MAX_NR_BOUNCE_BUFS + 1)
+#define WRAPFD_FS_MAGIC 0x57524150
 
 struct wrap_ctx;
 struct wrap_content;
@@ -85,7 +92,7 @@ struct wrap_content_dmabuf {
 	 * is only cleared during the rewrap and empty operations, at which point the content is not
 	 * visible to other threads.
 	 */
-	struct iosys_map map;
+	void *vaddr;
 	bool writable;
 };
 
@@ -108,6 +115,7 @@ struct wrap_io_ctx {
 	size_t bytes_read;
 	struct wrap_io_req *reqs;
 	unsigned int nr_reqs;
+	unsigned int total_reqs;
 	spinlock_t lock;
 	struct completion io_done;
 };
@@ -115,14 +123,14 @@ struct wrap_io_ctx {
 struct wrap_io_req {
 	struct kiocb kiocb;
 	struct iov_iter iter;
-	struct kvec iov[MAX_NR_KVECS];
+	struct bio_vec *bvecs;
 	struct data_segment file_seg;
 	struct wrap_io_ctx *io_ctx;
 };
 
 struct dmabuf_load_param {
 	struct dma_buf *dmabuf;
-	struct iosys_map map;
+	void *vaddr;
 	struct wrap_io_ctx io_ctx;
 };
 
@@ -161,11 +169,15 @@ static void dmabuf_get_content_attribs(struct wrap_content *content,
 	attrs->size = dmabuf_content->dmabuf->size;
 }
 
+/*
+ * The exporter provides the kernel mapping through its vmap operation; an exporter without one
+ * cannot have its content cleared or loaded.
+ */
 static int dmabuf_content_clear_prepare(struct wrap_content *content)
 {
 	struct wrap_content_dmabuf *dmabuf_content;
 	struct dma_buf *dmabuf;
-	struct iosys_map map;
+	void *vaddr;
 	int ret;
 
 	dmabuf_content = container_of(content, struct wrap_content_dmabuf, content);
@@ -174,31 +186,22 @@ static int dmabuf_content_clear_prepare(struct wrap_content *content)
 	if (ret)
 		return ret;
 
-	ret = dma_buf_vmap_unlocked(dmabuf, &map);
-	if (ret)
-		goto err_end_cpu;
-
-	if (map.is_iomem)
-		ret = -EINVAL;
-	else
-		dmabuf_content->map = map;
-
-	if (ret)
-		dma_buf_vunmap_unlocked(dmabuf, &map);
-err_end_cpu:
-	if (ret)
+	vaddr = dma_buf_vmap(dmabuf);
+	if (!vaddr) {
 		dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
-	return ret;
+		return -EINVAL;
+	}
+
+	dmabuf_content->vaddr = vaddr;
+	return 0;
 }
 
 static void dmabuf_content_clear(struct wrap_content *content)
 {
 	struct wrap_content_dmabuf *dmabuf_content;
-	struct dma_buf *dmabuf;
 
 	dmabuf_content = container_of(content, struct wrap_content_dmabuf, content);
-	dmabuf = dmabuf_content->dmabuf;
-	iosys_map_memset(&dmabuf_content->map, 0, 0, dmabuf->size);
+	memset(dmabuf_content->vaddr, 0, dmabuf_content->dmabuf->size);
 }
 
 static void dmabuf_content_clear_complete(struct wrap_content *content)
@@ -209,8 +212,8 @@ static void dmabuf_content_clear_complete(struct wrap_content *content)
 	dmabuf_content = container_of(content, struct wrap_content_dmabuf, content);
 	dmabuf = dmabuf_content->dmabuf;
 
-	dma_buf_vunmap_unlocked(dmabuf, &dmabuf_content->map);
-	iosys_map_clear(&dmabuf_content->map);
+	dma_buf_vunmap(dmabuf, dmabuf_content->vaddr);
+	dmabuf_content->vaddr = NULL;
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 }
 
@@ -221,20 +224,22 @@ static size_t dio_aligned_len(loff_t file_offs, size_t len)
 	 * the start and end of the read to figure out how much we'll actually be reading from the
 	 * file.
 	 */
-	return PAGE_ALIGN(file_offs + len) - PAGE_ALIGN_DOWN(file_offs);
+	return PAGE_ALIGN(file_offs + len) - ALIGN_DOWN(file_offs, PAGE_SIZE);
 }
 
-static void async_io_complete(struct kiocb *kiocb, long ret)
+static void async_io_complete(struct kiocb *kiocb, long ret, long ret2)
 {
 	struct wrap_io_req *req = container_of(kiocb, struct wrap_io_req, kiocb);
 	struct wrap_io_ctx *io_ctx = req->io_ctx;
 	unsigned long flags;
 
 	spin_lock_irqsave(&io_ctx->lock, flags);
-	if (ret < 0 && !io_ctx->ret)
-		io_ctx->ret = ret;
-	else
+	if (ret < 0) {
+		if (!io_ctx->ret)
+			io_ctx->ret = ret;
+	} else {
 		io_ctx->bytes_read += ret;
+	}
 
 	io_ctx->nr_reqs--;
 
@@ -243,20 +248,55 @@ static void async_io_complete(struct kiocb *kiocb, long ret)
 	spin_unlock_irqrestore(&io_ctx->lock, flags);
 }
 
-static void init_io_req(struct wrap_io_ctx *io_ctx, struct wrap_io_req *req, loff_t req_file_offs,
-			size_t req_len)
+/*
+ * Direct I/O on this kernel takes its destination pages from a bio_vec iterator; a kvec iterator
+ * is rejected by iov_iter_get_pages(). Every segment is page aligned and a whole number of pages.
+ */
+static int wrap_io_req_add_seg(struct wrap_io_req *req, unsigned int *nr_segs,
+			       unsigned int max_segs, void *base, size_t len)
+{
+	size_t off;
+
+	for (off = 0; off < len; off += PAGE_SIZE) {
+		void *addr = base + off;
+		struct page *page;
+
+		if (*nr_segs >= max_segs)
+			return -EINVAL;
+
+		page = is_vmalloc_addr(addr) ? vmalloc_to_page(addr) : virt_to_page(addr);
+		if (!page || !pfn_valid(page_to_pfn(page)))
+			return -EINVAL;
+
+		req->bvecs[*nr_segs].bv_page = page;
+		req->bvecs[*nr_segs].bv_len = PAGE_SIZE;
+		req->bvecs[*nr_segs].bv_offset = 0;
+		(*nr_segs)++;
+	}
+
+	return 0;
+}
+
+static int init_io_req(struct wrap_io_ctx *io_ctx, struct wrap_io_req *req, loff_t req_file_offs,
+		       size_t req_len)
 {
 	unsigned int nr_segs = 0;
+	unsigned int max_segs = req_len >> PAGE_SHIFT;
 	loff_t global_file_offset;
 	loff_t global_dio_file_offset;
+	int ret;
 
 	/*
 	 * These are global in the context of the overall I/O request. The first represents the
 	 * offset into the file at which we start reading from for the overall request. The second
 	 * is the offset at which we read from the file directly into the destination buffer.
 	 */
-	global_file_offset = PAGE_ALIGN_DOWN(io_ctx->file_seg.offs);
+	global_file_offset = ALIGN_DOWN(io_ctx->file_seg.offs, PAGE_SIZE);
 	global_dio_file_offset = global_file_offset + io_ctx->start_bounce_len;
+
+	req->bvecs = kvmalloc_array(max_segs, sizeof(*req->bvecs), GFP_KERNEL);
+	if (!req->bvecs)
+		return -ENOMEM;
 
 	init_sync_kiocb(&req->kiocb, io_ctx->file);
 	req->kiocb.ki_pos = req_file_offs;
@@ -271,11 +311,12 @@ static void init_io_req(struct wrap_io_ctx *io_ctx, struct wrap_io_req *req, lof
 	 * request.
 	 */
 	if (io_ctx->start_bounce_len && (req_file_offs == global_file_offset)) {
-		req->iov[nr_segs].iov_base = io_ctx->bounce_bufs[0];
-		req->iov[nr_segs].iov_len = io_ctx->start_bounce_len;
+		ret = wrap_io_req_add_seg(req, &nr_segs, max_segs, io_ctx->bounce_bufs[0],
+					  io_ctx->start_bounce_len);
+		if (ret)
+			goto err_free_bvecs;
 		req_len -= io_ctx->start_bounce_len;
 		req_file_offs += io_ctx->start_bounce_len;
-		nr_segs++;
 	}
 
 	/*
@@ -286,13 +327,6 @@ static void init_io_req(struct wrap_io_ctx *io_ctx, struct wrap_io_req *req, lof
 		size_t dio_len;
 
 		/*
-		 * The offset into the buffer for this request should be the base of where we start
-		 * reading directly into it, plus how much we've already read into the region in
-		 * previous requests.
-		 */
-		req->iov[nr_segs].iov_base = io_ctx->dst_buf + io_ctx->dio_buf_seg.offs +
-					     (req_file_offs - global_dio_file_offset);
-		/*
 		 * The amount of data to read is the smaller of the two terms:
 		 *
 		 * 1. How much data is left for this request.
@@ -302,10 +336,18 @@ static void init_io_req(struct wrap_io_ctx *io_ctx, struct wrap_io_req *req, lof
 		 */
 		dio_len = min_t(size_t, req_len, global_dio_file_offset + io_ctx->dio_buf_seg.len -
 				req_file_offs);
-		req->iov[nr_segs].iov_len = dio_len;
+		/*
+		 * The offset into the buffer for this request should be the base of where we start
+		 * reading directly into it, plus how much we've already read into the region in
+		 * previous requests.
+		 */
+		ret = wrap_io_req_add_seg(req, &nr_segs, max_segs,
+					  io_ctx->dst_buf + io_ctx->dio_buf_seg.offs +
+					  (req_file_offs - global_dio_file_offset), dio_len);
+		if (ret)
+			goto err_free_bvecs;
 		req_len -= dio_len;
 		req_file_offs += dio_len;
-		nr_segs++;
 	}
 
 	if (req_len && io_ctx->end_bounce_len) {
@@ -334,23 +376,31 @@ static void init_io_req(struct wrap_io_ctx *io_ctx, struct wrap_io_req *req, lof
 		WARN_ON(req_len > PAGE_SIZE * 2);
 
 		while (req_len) {
-			req->iov[nr_segs].iov_base = io_ctx->bounce_bufs[start_bounce_idx];
-			req->iov[nr_segs].iov_len = PAGE_SIZE;
+			ret = wrap_io_req_add_seg(req, &nr_segs, max_segs,
+						  io_ctx->bounce_bufs[start_bounce_idx], PAGE_SIZE);
+			if (ret)
+				goto err_free_bvecs;
 			req_len -= PAGE_SIZE;
-			nr_segs++;
 			start_bounce_idx++;
 		}
 	}
 
 	WARN_ON(req_len);
 
-	iov_iter_kvec(&req->iter, ITER_DEST, req->iov, nr_segs, req->file_seg.len);
+	iov_iter_bvec(&req->iter, ITER_BVEC | READ, req->bvecs, nr_segs, req->file_seg.len);
+	return 0;
+
+err_free_bvecs:
+	kvfree(req->bvecs);
+	req->bvecs = NULL;
+	return ret;
 }
 
 static int prepare_read_reqs(struct wrap_io_ctx *io_ctx)
 {
 	struct wrap_io_req *reqs;
 	unsigned int nr_reqs, i;
+	int ret;
 	loff_t cur_file_offs;
 	size_t remaining_len = dio_aligned_len(io_ctx->file_seg.offs, io_ctx->file_seg.len);
 	size_t len_per_req;
@@ -368,22 +418,29 @@ static int prepare_read_reqs(struct wrap_io_ctx *io_ctx)
 	nr_reqs = DIV_ROUND_UP(remaining_len, len_per_req);
 
 	/* nr_reqs could be large, so use kvcalloc() just in case. */
-	reqs = kvzalloc_objs(*reqs, nr_reqs);
+	reqs = kvcalloc(nr_reqs, sizeof(*reqs), GFP_KERNEL);
 	if (!reqs)
 		return -ENOMEM;
 
-	cur_file_offs = PAGE_ALIGN_DOWN(io_ctx->file_seg.offs);
+	cur_file_offs = ALIGN_DOWN(io_ctx->file_seg.offs, PAGE_SIZE);
 
 	for (i = 0; i < nr_reqs; i++) {
 		size_t req_len = min(len_per_req, remaining_len);
 
-		init_io_req(io_ctx, &reqs[i], cur_file_offs, req_len);
+		ret = init_io_req(io_ctx, &reqs[i], cur_file_offs, req_len);
+		if (ret) {
+			for (i = 0; i < nr_reqs; i++)
+				kvfree(reqs[i].bvecs);
+			kvfree(reqs);
+			return ret;
+		}
 		cur_file_offs += req_len;
 		remaining_len -= req_len;
 	}
 
 	io_ctx->reqs = reqs;
 	io_ctx->nr_reqs = nr_reqs;
+	io_ctx->total_reqs = nr_reqs;
 	return 0;
 }
 
@@ -444,9 +501,9 @@ static int wrap_io_prepare(struct file *file, loff_t file_offs, u8 *dst_buf, lof
 	 * the range we're reading into, and since direct I/O is done in units of pages,
 	 * ensure that there is at least a page to read.
 	 */
-	if (!check_sub_overflow(buf_end, PAGE_SIZE, &dio_buf_limit) &&
+	if (!check_sub_overflow(buf_end, (loff_t)PAGE_SIZE, &dio_buf_limit) &&
 	    dio_buf_offs <= dio_buf_limit)
-		dio_buf_len = PAGE_ALIGN_DOWN(buf_end) - dio_buf_offs;
+		dio_buf_len = ALIGN_DOWN(buf_end, PAGE_SIZE) - dio_buf_offs;
 
 	/*
 	 * Bounce the remainder, which is capped at 2 pages, since we may have shifted the data
@@ -504,6 +561,9 @@ static int wrap_io_read(struct wrap_io_ctx *io_ctx)
 	 * haven't started reading anything yet.
 	 */
 	nr_reqs = io_ctx->nr_reqs;
+	/* An empty request list never signals completion. */
+	if (!nr_reqs)
+		return 0;
 
 	for (i = 0; i < nr_reqs; i++) {
 		struct wrap_io_req *req = &io_ctx->reqs[i];
@@ -518,9 +578,11 @@ static int wrap_io_read(struct wrap_io_ctx *io_ctx)
 		 * ensure that the nr_reqs context field is decremented properly so that we don't
 		 * block indefinitely in the wait_for_completion() call later.
 		 */
-		ret = vfs_iocb_iter_read(io_ctx->file, &req->kiocb, &req->iter);
+		ret = security_file_permission(io_ctx->file, MAY_READ);
+		if (!ret)
+			ret = call_read_iter(io_ctx->file, &req->kiocb, &req->iter);
 		if (ret != -EIOCBQUEUED)
-			async_io_complete(&req->kiocb, ret);
+			async_io_complete(&req->kiocb, ret, 0);
 	}
 
 	wait_for_completion(&io_ctx->io_done);
@@ -584,6 +646,8 @@ static void wrap_io_complete(struct wrap_io_ctx *io_ctx)
 	WARN_ON(tot_len);
 
 out:
+	for (i = 0; i < io_ctx->total_reqs; i++)
+		kvfree(io_ctx->reqs[i].bvecs);
 	kvfree(io_ctx->reqs);
 	for (i = 0; i < ((io_ctx->start_bounce_len + io_ctx->end_bounce_len) / PAGE_SIZE); i++)
 		free_page((unsigned long)io_ctx->bounce_bufs[i]);
@@ -593,7 +657,7 @@ out:
 static int dmabuf_content_load_prepare(struct file *file, struct dma_buf *dmabuf, loff_t file_offs,
 				       loff_t buf_offs, loff_t len, struct dmabuf_load_param *param)
 {
-	struct iosys_map map;
+	void *vaddr;
 	loff_t buf_end;
 	int ret;
 
@@ -608,25 +672,22 @@ static int dmabuf_content_load_prepare(struct file *file, struct dma_buf *dmabuf
 	if (ret)
 		return ret;
 
-	ret = dma_buf_vmap_unlocked(dmabuf, &map);
-	if (ret)
-		goto err_end_access;
-
-	if (map.is_iomem) {
+	vaddr = dma_buf_vmap(dmabuf);
+	if (!vaddr) {
 		ret = -EINVAL;
-		goto err_unmap;
+		goto err_end_access;
 	}
 
-	ret = wrap_io_prepare(file, file_offs, map.vaddr, buf_offs, len, &param->io_ctx);
+	ret = wrap_io_prepare(file, file_offs, vaddr, buf_offs, len, &param->io_ctx);
 	if (ret < 0)
 		goto err_unmap;
 
 	param->dmabuf = dmabuf;
-	param->map = map;
+	param->vaddr = vaddr;
 	return 0;
 
 err_unmap:
-	dma_buf_vunmap_unlocked(dmabuf, &map);
+	dma_buf_vunmap(dmabuf, vaddr);
 err_end_access:
 	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	return ret;
@@ -635,7 +696,7 @@ err_end_access:
 static void dmabuf_content_load_complete(struct dmabuf_load_param *param)
 {
 	wrap_io_complete(&param->io_ctx);
-	dma_buf_vunmap_unlocked(param->dmabuf, &param->map);
+	dma_buf_vunmap(param->dmabuf, param->vaddr);
 	dma_buf_end_cpu_access(param->dmabuf, DMA_BIDIRECTIONAL);
 }
 
@@ -767,10 +828,11 @@ static int dmabuf_content_ioctl(struct wrap_content *content,
 	file = dmabuf_content->dmabuf->file;
 
 	if (in_compat_syscall())
-		return file->f_op->compat_ioctl(file, cmd, arg);
+		return file->f_op->compat_ioctl ?
+		       file->f_op->compat_ioctl(file, cmd, arg) : -ENOIOCTLCMD;
 
-	return file->f_op->unlocked_ioctl(file, cmd, arg);
-
+	return file->f_op->unlocked_ioctl ?
+	       file->f_op->unlocked_ioctl(file, cmd, arg) : -ENOIOCTLCMD;
 }
 
 static struct wrap_content_operations dmabuf_content_ops = {
@@ -794,7 +856,7 @@ static struct wrap_content *alloc_dmabuf_content(struct dma_buf *dmabuf,
 {
 	struct wrap_content_dmabuf *dmabuf_content;
 
-	dmabuf_content = kmalloc_obj(*dmabuf_content);
+	dmabuf_content = kmalloc(sizeof(*dmabuf_content), GFP_KERNEL);
 	if (!dmabuf_content)
 		return ERR_PTR(-ENOMEM);
 
@@ -802,7 +864,7 @@ static struct wrap_content *alloc_dmabuf_content(struct dma_buf *dmabuf,
 	dmabuf_content->dmabuf = dmabuf;
 	dmabuf_content->writable = writable;
 	dmabuf_content->content.ops = &dmabuf_content_ops;
-	iosys_map_clear(&dmabuf_content->map);
+	dmabuf_content->vaddr = NULL;
 
 	return &dmabuf_content->content;
 }
@@ -923,7 +985,7 @@ static struct wrap_ctx *create_wrap_ctx(void)
 {
 	struct wrap_ctx *ctx;
 
-	ctx = kzalloc_obj(*ctx);
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return NULL;
 
@@ -1025,6 +1087,54 @@ static void destroy_wrap_ctx(struct wrap_ctx *ctx)
 
 }
 
+/*
+ * Each wrapfd needs its own inode because the inode size reports the wrapped buffer size and
+ * anon_inode_getfile() hands every file the same inode.
+ */
+static struct vfsmount *wrapfd_mnt;
+
+static char *wrapfd_dname(struct dentry *dentry, char *buffer, int buflen)
+{
+	return dynamic_dname(dentry, buffer, buflen, "anon_inode:%s", "[wrapfd]");
+}
+
+static const struct dentry_operations wrapfd_dentry_ops = {
+	.d_dname = wrapfd_dname,
+};
+
+static struct dentry *wrapfd_fs_mount(struct file_system_type *fs_type, int flags,
+				      const char *name, void *data)
+{
+	return mount_pseudo(fs_type, "wrapfd:", NULL, &wrapfd_dentry_ops, WRAPFD_FS_MAGIC);
+}
+
+static struct file_system_type wrapfd_fs_type = {
+	.name = "wrapfd",
+	.mount = wrapfd_fs_mount,
+	.kill_sb = kill_anon_super,
+};
+
+static struct file *wrap_create_file(struct wrap_ctx *ctx, int flags)
+{
+	struct inode *inode;
+	struct file *file;
+
+	inode = alloc_anon_inode(wrapfd_mnt->mnt_sb);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
+
+	inode->i_mode &= ~S_IFMT;
+	inode->i_mode |= S_IFREG;
+	file = alloc_file_pseudo(inode, wrapfd_mnt, "[wrapfd]", flags, &wrap_fops);
+	if (IS_ERR(file)) {
+		iput(inode);
+		return file;
+	}
+
+	file->private_data = ctx;
+	return file;
+}
+
 static inline int publish_wrap(struct wrap_ctx *ctx,
 			       struct wrap_content *old_content,
 			       struct wrap_content *content)
@@ -1039,8 +1149,7 @@ static inline int publish_wrap(struct wrap_ctx *ctx,
 	if (fd < 0)
 		return fd;
 
-	file = anon_inode_create_getfile("[wrapfd]", &wrap_fops, ctx,
-					 attrs.writable ? O_RDWR : O_RDONLY, NULL);
+	file = wrap_create_file(ctx, attrs.writable ? O_RDWR : O_RDONLY);
 	if (IS_ERR(file)) {
 		err = PTR_ERR(file);
 		goto put_fd;
@@ -1252,7 +1361,7 @@ unlock:
 		goto err;
 
 	/* If we reached here then ctx->map_count has been incremented */
-	mapping = kzalloc_obj(*mapping);
+	mapping = kzalloc(sizeof(*mapping), GFP_KERNEL);
 	if (!mapping) {
 		ret = -ENOMEM;
 		goto err_dec;
@@ -1273,9 +1382,9 @@ unlock:
 			ret = -EACCES;
 			goto err_free_mapping;
 		}
-		vm_flags_clear(vma, VM_MAYWRITE);
+		vma->vm_flags &= ~VM_MAYWRITE;
 	}
-	vm_flags_set(vma, VM_DONTCOPY);
+	vma->vm_flags |= VM_DONTCOPY;
 
 	spin_lock(&ctx->lock);
 	mapping->content_vm_ops = vma->vm_ops;
@@ -1422,7 +1531,8 @@ static int wrap_file_acquire_ownership(struct wrap_ctx *ctx)
 		goto unlock;
 	}
 
-	ctx->owner.task = get_task_struct(current->group_leader);
+	get_task_struct(current->group_leader);
+	ctx->owner.task = current->group_leader;
 	generate_event(ctx, WRAPFD_EVENT_OWN);
 unlock:
 	spin_unlock(&ctx->lock);
@@ -1491,7 +1601,7 @@ static int wrap_file_load(struct wrap_ctx *ctx,
 		goto put_file;
 	}
 
-	if (!(file->f_mode & FMODE_CAN_ODIRECT)) {
+	if (!file->f_mapping || !file->f_mapping->a_ops || !file->f_mapping->a_ops->direct_IO) {
 		ret = -EINVAL;
 		goto put_file;
 	}
@@ -1694,7 +1804,7 @@ static int wrap_file_repopulate(struct wrapfd_repopulate *wrapfd_repopulate)
 		return -EBADF;
 
 	f = fdget(wrapfd_repopulate->wrapfd);
-	file = fd_file(f);
+	file = f.file;
 	if (!file || file->f_op != &wrap_fops) {
 		ret = -EBADF;
 		goto put_file;
@@ -2086,7 +2196,7 @@ int wrapfd_add_listener(struct file *file, struct device *dev,
 
 	ctx = file->private_data;
 
-	listener = kmalloc_obj(*listener);
+	listener = kmalloc(sizeof(*listener), GFP_KERNEL);
 	if (!listener)
 		return -ENOMEM;
 
@@ -2225,14 +2335,14 @@ static __s64 add_monitor(struct file_monitor *file_mon, struct wrapfd_add_monito
 		return -EINVAL;
 
 	f = fdget(monitor->fd);
-	file = fd_file(f);
+	file = f.file;
 	if (!file || file->f_op != &wrap_fops) {
 		fdput(f);
 		return -EBADF;
 	}
 
 	ctx = file->private_data;
-	tmp = kzalloc_obj(*tmp);
+	tmp = kzalloc(sizeof(*tmp), GFP_KERNEL);
 
 	spin_lock(&ctx->lock);
 	spin_lock(&file_mon->event_lock);
@@ -2277,11 +2387,11 @@ static long wrapfd_dev_add_monitor(struct file *file, unsigned long arg)
 	if (!monitors->len || monitors->len > WRAPFD_MAX_NR_MONITORS || !monitors->results)
 		return -EINVAL;
 
-	arr = memdup_array_user(u64_to_user_ptr(monitors->arr), monitors->len, sizeof(*arr));
+	arr = memdup_user(u64_to_user_ptr(monitors->arr), array_size(monitors->len, sizeof(*arr)));
 	if (IS_ERR(arr))
 		return PTR_ERR(arr);
 
-	results = kzalloc_objs(*results, monitors->len);
+	results = kcalloc(monitors->len, sizeof(*results), GFP_KERNEL);
 	if (!results) {
 		ret = -ENOMEM;
 		goto free_arr;
@@ -2390,11 +2500,11 @@ static long wrapfd_dev_del_monitor(struct file *file, unsigned long arg)
 	if (!monitors->len || monitors->len > WRAPFD_MAX_NR_MONITORS || !monitors->results)
 		return -EINVAL;
 
-	arr = memdup_array_user(u64_to_user_ptr(monitors->arr), monitors->len, sizeof(*arr));
+	arr = memdup_user(u64_to_user_ptr(monitors->arr), array_size(monitors->len, sizeof(*arr)));
 	if (IS_ERR(arr))
 		return PTR_ERR(arr);
 
-	results = kzalloc_objs(*results, monitors->len);
+	results = kcalloc(monitors->len, sizeof(*results), GFP_KERNEL);
 	if (!results) {
 		ret = -ENOMEM;
 		goto free_arr;
@@ -2459,7 +2569,7 @@ static long wrapfd_dev_query_events(struct file *file, unsigned long arg)
 	if (!events.arr || !events.len || events.len > WRAPFD_MAX_NR_EVENTS)
 		return -EINVAL;
 
-	arr = kzalloc_objs(*arr, events.len);
+	arr = kcalloc(events.len, sizeof(*arr), GFP_KERNEL);
 	if (!arr)
 		return -ENOMEM;
 
@@ -2500,7 +2610,7 @@ static int wrapfd_dev_open(struct inode *ignored, struct file *file)
 {
 	struct file_monitor *file_mon;
 
-	file_mon = kmalloc_obj(*file_mon);
+	file_mon = kmalloc(sizeof(*file_mon), GFP_KERNEL);
 	if (!file_mon)
 		return -ENOMEM;
 
@@ -2601,26 +2711,17 @@ static __poll_t wrapfd_dev_poll(struct file *file, struct poll_table_struct *wai
 	return mask;
 }
 
-#if IS_ENABLED(CONFIG_ANDROID_WRAPFD_KUNIT_TEST)
-int create_wrapfd(int fd, int prot)
+static long wrapfd_dev_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	return __create_wrapfd(fd, prot);
+	return wrapfd_dev_ioctl(file, cmd, (unsigned long)compat_ptr(arg));
 }
-EXPORT_SYMBOL_NS_GPL(create_wrapfd, EXPORTED_FOR_KUNIT_TESTING);
-
-int empty_wrapfd(struct file *file, struct device *dev)
-{
-	return wrap_file_empty(file->private_data, dev);
-}
-EXPORT_SYMBOL_NS_GPL(empty_wrapfd, EXPORTED_FOR_KUNIT_TESTING);
-#endif
 
 static const struct file_operations wrapfd_dev_fops = {
 	.owner = THIS_MODULE,
 	.open = wrapfd_dev_open,
 	.release = wrapfd_dev_release,
 	.unlocked_ioctl = wrapfd_dev_ioctl,
-	.compat_ioctl = compat_ptr_ioctl,
+	.compat_ioctl = wrapfd_dev_compat_ioctl,
 	.llseek = noop_llseek,
 	.poll = wrapfd_dev_poll,
 };
@@ -2635,9 +2736,14 @@ static int __init wrapfd_init(void)
 {
 	int ret;
 
+	wrapfd_mnt = kern_mount(&wrapfd_fs_type);
+	if (IS_ERR(wrapfd_mnt))
+		return PTR_ERR(wrapfd_mnt);
+
 	ret = misc_register(&wrapfd_misc);
 	if (ret) {
 		pr_err("failed to register misc device!\n");
+		kern_unmount(wrapfd_mnt);
 		return ret;
 	}
 

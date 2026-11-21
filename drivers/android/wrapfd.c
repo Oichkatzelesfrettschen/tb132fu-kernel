@@ -1177,6 +1177,7 @@ static struct file *wrap_create_file(struct wrap_ctx *ctx, int flags)
 		return file;
 	}
 
+	file->f_mode |= FMODE_LSEEK;
 	file->private_data = ctx;
 	return file;
 }

@@ -532,7 +532,11 @@ static void update_vttbr(struct kvm *kvm)
 	/* First user of a new VMID generation? */
 	if (unlikely(kvm_next_vmid == 0)) {
 		atomic64_inc(&kvm_vmid_gen);
-		kvm_next_vmid = 1;
+		/*
+		 * The lending hypervisor tags its own stage-2 entries with
+		 * 8-bit VMIDs; guests take VMIDs above that range.
+		 */
+		kvm_next_vmid = (gz_lend_mode && kvm_vmid_bits > 8) ? 0x100 : 1;
 
 		/*
 		 * On SMP we know no other CPUs can use this CPU's or each
@@ -1729,9 +1733,22 @@ void kvm_arch_exit(void)
 	kvm_perf_teardown();
 }
 
+/*
+ * With lent EL2 the hyp setup issues calls into the lending hypervisor, so
+ * it runs when gz_lend is armed from userspace instead of at initcall time.
+ */
+int kvm_arm_gz_lend_late_init(void)
+{
+	return kvm_init(NULL, sizeof(struct kvm_vcpu), 0, THIS_MODULE);
+}
+
 static int arm_init(void)
 {
-	int rc = kvm_init(NULL, sizeof(struct kvm_vcpu), 0, THIS_MODULE);
+	int rc;
+
+	if (gz_lend_mode)
+		return 0;
+	rc = kvm_init(NULL, sizeof(struct kvm_vcpu), 0, THIS_MODULE);
 	return rc;
 }
 

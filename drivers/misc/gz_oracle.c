@@ -42,7 +42,7 @@ static int gz_oracle_show(struct seq_file *m, void *v)
 	struct gz_oracle_read r;
 	int cpu, sel;
 
-	if (is_hyp_mode_available() || is_kernel_in_hyp_mode()) {
+	if (__boot_cpu_mode[0] != BOOT_CPU_MODE_EL1) {
 		seq_puts(m, "kernel entered at EL2: no hypervisor below it\n");
 		return 0;
 	}
@@ -70,6 +70,7 @@ static int gz_oracle_show(struct seq_file *m, void *v)
 #define GZ_LEND_ID	0xEF000E13UL
 
 extern char gz_lend_probe[];
+int gz_lend_arm(void);
 
 struct gz_lend_req {
 	unsigned long pa, a[4];
@@ -95,13 +96,18 @@ static ssize_t gz_lend_write(struct file *file, const char __user *ubuf,
 	struct gz_lend_req r = { 0 };
 	int cpu, n = 0, ret;
 
-	if (is_hyp_mode_available() || is_kernel_in_hyp_mode())
+	if (__boot_cpu_mode[0] != BOOT_CPU_MODE_EL1)
 		return -ENODEV;
 	if (len >= sizeof(buf))
 		return -EINVAL;
 	if (copy_from_user(buf, ubuf, len))
 		return -EFAULT;
 	buf[len] = 0;
+	if (!strncmp(buf, "arm", 3)) {
+		int err = gz_lend_arm();
+
+		return err ? err : len;
+	}
 	if (sscanf(buf, "%d %23s %lx %lx %lx %lx%n", &cpu, tok, &r.a[0],
 		   &r.a[1], &r.a[2], &r.a[3], &n) < 2)
 		return -EINVAL;

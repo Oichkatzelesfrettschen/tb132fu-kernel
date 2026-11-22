@@ -120,12 +120,22 @@ ENDPROC(\label)
 ENTRY(__hyp_set_vectors)
 	mov	x1, x0
 	mov	x0, #HVC_SET_VECTORS
+	adr_l	x9, gz_lend_mode
+	ldrb	w9, [x9]
+	cbz	w9, 99f
+	b	gz_lend_hyp_call
+99:
 	hvc	#0
 	ret
 ENDPROC(__hyp_set_vectors)
 
 ENTRY(__hyp_reset_vectors)
 	mov	x0, #HVC_RESET_VECTORS
+	adr_l	x9, gz_lend_mode
+	ldrb	w9, [x9]
+	cbz	w9, 99f
+	b	gz_lend_hyp_call
+99:
 	hvc	#0
 	ret
 ENDPROC(__hyp_reset_vectors)

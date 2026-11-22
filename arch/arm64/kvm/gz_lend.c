@@ -46,51 +46,6 @@ struct gz_lend_cpu {
 
 static DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
 
-/*
- * Debug breadcrumbs in the last page of the ramoops reservation, which keeps
- * its contents across a watchdog reset. EL1 slots (64 bytes per CPU at 0x000)
- * are written through a device mapping;
- * EL2 slots (0x800 + 64 * cpu) are written only by the shim with the MMU off.
- */
-#define GZ_LEND_CRUMB_PA	0x4811e000UL	/* last ramoops oops-dump zone */
-#define GZ_LEND_CRUMB_EL1	0x100
-#define GZ_LEND_CRUMB_EL2	0x800
-#define GZ_LEND_SAVE_CRUMB	0x70
-
-static u64 *gz_lend_crumb;
-u64 gz_lend_crumb_prev[PAGE_SIZE / sizeof(u64)];
-static atomic_t gz_lend_seq;
-
-static void gz_lend_note(int cpu, u64 state, u64 a0, u64 a1)
-{
-	u64 *s;
-
-	if (!gz_lend_crumb)
-		return;
-	s = gz_lend_crumb + GZ_LEND_CRUMB_EL1 / 8 + cpu * 8;
-	s[0] = state;
-	s[1] = atomic_inc_return(&gz_lend_seq);
-	s[2] = a0;
-	s[3] = a1;
-}
-
-static int __init gz_lend_crumb_init(void)
-{
-	int i;
-
-	if (!gz_lend_mode)
-		return 0;
-	/* The reservation is no-map, so it takes a device mapping. */
-	gz_lend_crumb = (u64 *)ioremap(GZ_LEND_CRUMB_PA, PAGE_SIZE);
-	if (!gz_lend_crumb)
-		return 0;
-	for (i = GZ_LEND_CRUMB_EL1 / 8; i < PAGE_SIZE / sizeof(u64); i++) {
-		gz_lend_crumb_prev[i] = gz_lend_crumb[i];
-		gz_lend_crumb[i] = 0;
-	}
-	return 0;
-}
-core_initcall(gz_lend_crumb_init);
 static unsigned long gz_lend_shim_pa;
 static u64 gz_lend_run_fn __read_mostly = ~0ULL;
 static bool gz_lend_armed;
@@ -124,7 +79,6 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 			raw_smp_processor_id(), a0, a1, a2, a3);
 	local_irq_save(flags);
 	c = this_cpu_ptr(&gz_lend_cpu);
-	gz_lend_note(smp_processor_id(), 1, a0, a1);
 	arm_smccc_hvc(GZ_LEND_ID, gz_lend_shim_pa, a0, a1, a2, a3,
 		      c->save_pa | (a0 == gz_lend_run_fn),
 		      (unsigned long)&c->fp, &res);
@@ -134,7 +88,6 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 		       a0, a1, a2, a3, res.a1, res.a2, res.a3);
 		return 0;
 	}
-	gz_lend_note(smp_processor_id(), 2, a0, res.a0);
 	if (res.a1 == 1)
 		fpsimd_load_state(&c->fp);
 	local_irq_restore(flags);

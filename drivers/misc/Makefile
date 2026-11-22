@@ -60,4 +60,4 @@ obj-$(CONFIG_OCXL)		+= ocxl/
 obj-$(CONFIG_MISC_RTSX)		+= cardreader/
 obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
 obj-y				+= mediatek/
-obj-$(CONFIG_ARM64)		+= gz_oracle.o
+obj-$(CONFIG_ARM64)		+= gz_oracle.o gz_lend_probe.o

@@ -46,7 +46,8 @@ static DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
  * are written through a device mapping;
  * EL2 slots (0x800 + 64 * cpu) are written only by the shim with the MMU off.
  */
-#define GZ_LEND_CRUMB_PA	0x4816f000UL
+#define GZ_LEND_CRUMB_PA	0x4811e000UL	/* last ramoops oops-dump zone */
+#define GZ_LEND_CRUMB_EL1	0x100
 #define GZ_LEND_CRUMB_EL2	0x800
 #define GZ_LEND_SAVE_CRUMB	0x70
 
@@ -60,7 +61,7 @@ static void gz_lend_note(int cpu, u64 state, u64 a0, u64 a1)
 
 	if (!gz_lend_crumb)
 		return;
-	s = gz_lend_crumb + cpu * 8;
+	s = gz_lend_crumb + GZ_LEND_CRUMB_EL1 / 8 + cpu * 8;
 	s[0] = state;
 	s[1] = atomic_inc_return(&gz_lend_seq);
 	s[2] = a0;
@@ -77,7 +78,7 @@ static int __init gz_lend_crumb_init(void)
 	gz_lend_crumb = (u64 *)ioremap(GZ_LEND_CRUMB_PA, PAGE_SIZE);
 	if (!gz_lend_crumb)
 		return 0;
-	for (i = 0; i < PAGE_SIZE / sizeof(u64); i++) {
+	for (i = GZ_LEND_CRUMB_EL1 / 8; i < PAGE_SIZE / sizeof(u64); i++) {
 		gz_lend_crumb_prev[i] = gz_lend_crumb[i];
 		gz_lend_crumb[i] = 0;
 	}

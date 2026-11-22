@@ -5861,6 +5861,28 @@ binder_defer_work(struct binder_proc *proc, enum binder_deferred_state defer)
 	mutex_unlock(&binder_deferred_lock);
 }
 
+/*
+ * binder_mmap() takes a files_struct reference that binder_vma_close() drops.
+ * The mapping closes only when the last mm user goes away, so any other holder
+ * of the mm whose release depends on a file in that table (vhost holds the
+ * owner mm until its device file is released) forms a cycle that survives a
+ * killed process. Dropping the reference when the thread group dies breaks
+ * the cycle; task_get_unused_fd_flags(), task_fd_install() and task_close_fd()
+ * already treat a NULL proc->files as a dead target.
+ */
+void binder_thread_group_exit(struct task_struct *tsk)
+{
+	struct binder_proc *proc;
+	struct task_struct *leader = tsk->group_leader;
+
+	mutex_lock(&binder_procs_lock);
+	hlist_for_each_entry(proc, &binder_procs, proc_node) {
+		if (proc->tsk == leader)
+			binder_defer_work(proc, BINDER_DEFERRED_PUT_FILES);
+	}
+	mutex_unlock(&binder_procs_lock);
+}
+
 static void print_binder_transaction_ilocked(struct seq_file *m,
 					     struct binder_proc *proc,
 					     const char *prefix,

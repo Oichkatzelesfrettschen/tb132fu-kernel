@@ -923,6 +923,8 @@ void __noreturn do_exit(long code)
 
 	exit_sem(tsk);
 	exit_shm(tsk);
+	if (group_dead)
+		binder_thread_group_exit(tsk);
 	exit_files(tsk);
 	exit_fs(tsk);
 	if (group_dead)

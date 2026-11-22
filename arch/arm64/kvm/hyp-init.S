@@ -52,7 +52,7 @@ ENTRY(__kvm_hyp_init)
 	ventry	__invalid		// Error 32-bit EL1
 
 __invalid:
-	b	.
+	b	__gz_lend_fault
 
 	/*
 	 * x0: HYP pgd
@@ -182,6 +182,10 @@ ENDPROC(__kvm_handle_stub_hvc)
  * The shim swaps the lender's EL2 system registers for KVM's, runs the call
  * on KVM's hyp stack and page tables, and swaps back. It returns x0 = result
  * and x1 = 1 when it stored the live FP/SIMD registers in the x5 buffer.
+ * Bit 0 of x4 marks a guest run. Every other call runs with VBAR_EL2 on the
+ * idmap vectors, whose current-EL entries reach __gz_lend_fault: an EL2
+ * exception then unwinds to the lender and returns x0 = 0xdead0001 with
+ * FAR_EL2, ESR_EL2 and ELR_EL2 in x1-x3.
  *
  * With SCTLR_EL2.M clear every data access is Device-nGnRnE, so the save
  * page is accessed only here, with aligned 8-byte loads and stores, and the
@@ -190,20 +194,11 @@ ENDPROC(__kvm_handle_stub_hvc)
 #define GZL_X19		0x00
 #define GZL_SP		0x60
 #define GZL_LIVE	0x68
-#define GZL_CRUMB	0x70
+#define GZL_SP0		0x70
 #define GZL_G		0x080
 #define GZL_K		0x180
 #define GZL_SCTLR	(19 * 8)
 #define GZL_KSP		(20 * 8)
-
-/* Progress code into a physical cell that survives a reset; MMU off only. */
-.macro gzl_crumb code
-	ldr	x12, [x19, #GZL_CRUMB]
-	cbz	x12, 800f
-	mov	x13, #\code
-	str	x13, [x12]
-800:
-.endm
 
 .macro gzl_save base
 	mrs	x9, ttbr0_el2
@@ -294,8 +289,13 @@ ENTRY(__gz_lend_shim)
 	stp	x25, x26, [x4, #(GZL_X19 + 0x30)]
 	stp	x27, x28, [x4, #(GZL_X19 + 0x40)]
 	stp	x29, x30, [x4, #(GZL_X19 + 0x50)]
+	and	x27, x4, #1			// 1: guest run, KVM keeps its vectors
+	bic	x4, x4, #1
 	mov	x9, sp
 	str	x9, [x4, #GZL_SP]
+	mrs	x9, sp_el0
+	str	x9, [x4, #GZL_SP0]
+	msr	sp_el0, x4			// the fault path finds the page here
 	mov	x19, x4
 	mov	x20, x5
 	mov	x21, x0
@@ -309,7 +309,6 @@ ENTRY(__gz_lend_shim)
 	adr	x9, __kvm_hyp_init		// every current-EL vector there spins
 	msr	vbar_el2, x9
 	isb
-	gzl_crumb 0x2
 
 	ldr	x9, [x19, #GZL_LIVE]
 	cbz	x9, 5f
@@ -319,13 +318,18 @@ ENTRY(__gz_lend_shim)
 	isb
 	tlbi	alle2
 	dsb	sy
-	gzl_crumb 0x3
 	ldr	x10, [x19, #(GZL_K + GZL_KSP)]
 	ldr	x9, [x19, #(GZL_K + GZL_SCTLR)]
 	msr	sctlr_el2, x9
 	isb
 	mov	sp, x10
 	mov	x26, #1				// context stays live
+	mrs	x28, vbar_el2
+	cbnz	x27, 1f
+	adr	x9, __kvm_hyp_init
+	msr	vbar_el2, x9
+	isb
+1:
 
 	cmp	x21, #HVC_STUB_HCALL_NR
 	b.lo	3f
@@ -340,9 +344,11 @@ ENTRY(__gz_lend_shim)
 	kern_hyp_va	x9
 	fpsimd_save	x9, 10
 	mov	x25, #1
+	msr	vbar_el2, x28
 	b	4f
 
 3:	/* Stub call against a live context. */
+	msr	vbar_el2, x28
 	cmp	x21, #HVC_RESET_VECTORS
 	csel	x26, xzr, x26, eq
 	mov	x9, x21
@@ -352,23 +358,25 @@ ENTRY(__gz_lend_shim)
 	ldr	x21, =HVC_STUB_ERR
 
 4:	/* Leave KVM's context: MMU off, then store it. */
+	mov	x23, #0
+	mov	x24, #0
 	mov	x10, sp
 	mrs	x11, sctlr_el2
 	bic	x9, x11, #SCTLR_ELx_M
 	dsb	sy
 	msr	sctlr_el2, x9
 	isb
-	gzl_crumb 0x5
 	gzl_save GZL_K
 	str	x11, [x19, #(GZL_K + GZL_SCTLR)]
 	str	x10, [x19, #(GZL_K + GZL_KSP)]
 	str	x26, [x19, #GZL_LIVE]
-	gzl_crumb 0x6
 	b	9f
 
 5:	/* No KVM context on this CPU yet. */
 	cmp	x21, #HVC_STUB_HCALL_NR
 	b.hs	6f
+	mov	x23, #0
+	mov	x24, #0
 	mov	x9, x21
 	mov	x21, #0
 	cmp	x9, #HVC_SOFT_RESTART
@@ -380,7 +388,6 @@ ENTRY(__gz_lend_shim)
 	 * Hyp init: x21 = pgd, x22 = stack, x23 = vectors, x24 = per-CPU
 	 * offset. Same register programming as __do_hyp_init.
 	 */
-	gzl_crumb 0x10
 	phys_to_ttbr x4, x21
 	msr	ttbr0_el2, x4
 	mrs	x4, tcr_el1
@@ -400,7 +407,6 @@ ENTRY(__gz_lend_shim)
 	isb
 	tlbi	alle2
 	dsb	sy
-	gzl_crumb 0x11
 	ldr	x4, =(SCTLR_EL2_RES1 | (SCTLR_ELx_FLAGS & ~SCTLR_ELx_A))
 	msr	sctlr_el2, x4
 	isb
@@ -421,13 +427,14 @@ ENTRY(__gz_lend_shim)
 	ldr	x9, [x19, #(GZL_G + GZL_SCTLR)]
 	msr	sctlr_el2, x9
 	isb
-	gzl_crumb 0x8
 	ldr	x9, [x19, #GZL_SP]
 	mov	sp, x9
+	ldr	x9, [x19, #GZL_SP0]
+	msr	sp_el0, x9
 	mov	x0, x21
 	mov	x1, x25
-	mov	x2, #0
-	mov	x3, #0
+	mov	x2, x23
+	mov	x3, x24
 	mov	x4, x19
 	ldp	x19, x20, [x4, #(GZL_X19 + 0x00)]
 	ldp	x21, x22, [x4, #(GZL_X19 + 0x10)]
@@ -437,6 +444,24 @@ ENTRY(__gz_lend_shim)
 	ldp	x29, x30, [x4, #(GZL_X19 + 0x50)]
 	ret
 ENDPROC(__gz_lend_shim)
+
+/*
+ * EL2 exception during a lend call that is not a guest run. Runs from the
+ * idmap page with either MMU state; drops KVM's context on this CPU.
+ */
+__gz_lend_fault:
+	mrs	x19, sp_el0
+	mrs	x25, far_el2
+	mrs	x23, esr_el2
+	mrs	x24, elr_el2
+	mrs	x9, sctlr_el2
+	bic	x9, x9, #SCTLR_ELx_M
+	msr	sctlr_el2, x9
+	isb
+	str	xzr, [x19, #GZL_LIVE]
+	mov	x21, #0x0001
+	movk	x21, #0xdead, lsl #16
+	b	9b
 
 	.ltorg
 

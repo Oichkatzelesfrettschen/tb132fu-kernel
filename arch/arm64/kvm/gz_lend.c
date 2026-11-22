@@ -21,11 +21,14 @@
 #include <asm/cacheflush.h>
 #include <asm/fpsimd.h>
 #include <asm/kvm_mmu.h>
+#include <asm/kvm_asm.h>
+#include <asm/kvm_hyp.h>
 #include <asm/memory.h>
 #include <asm/virt.h>
 
 #define GZ_LEND_ID	0xEF000E13UL
 #define GZ_LEND_REJECT	0xffffffffUL
+#define GZ_LEND_FAULT	0xdead0001UL
 
 bool gz_lend_mode __ro_after_init;
 EXPORT_SYMBOL_GPL(gz_lend_mode);
@@ -86,6 +89,7 @@ static int __init gz_lend_crumb_init(void)
 }
 core_initcall(gz_lend_crumb_init);
 static unsigned long gz_lend_shim_pa;
+static u64 gz_lend_run_fn __read_mostly = ~0ULL;
 static bool gz_lend_armed;
 
 /* The boot CPU records EL1 entry in __boot_cpu_mode[0] before this runs. */
@@ -115,7 +119,14 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 	c = this_cpu_ptr(&gz_lend_cpu);
 	gz_lend_note(smp_processor_id(), 1, a0, a1);
 	arm_smccc_hvc(GZ_LEND_ID, gz_lend_shim_pa, a0, a1, a2, a3,
-		      c->save_pa, (unsigned long)&c->fp, &res);
+		      c->save_pa | (a0 == gz_lend_run_fn),
+		      (unsigned long)&c->fp, &res);
+	if (unlikely(res.a0 == GZ_LEND_FAULT)) {
+		local_irq_restore(flags);
+		pr_err("gz_lend: EL2 fault in call %llx(%llx, %llx, %llx): far=%lx esr=%lx elr=%lx\n",
+		       a0, a1, a2, a3, res.a1, res.a2, res.a3);
+		return 0;
+	}
 	gz_lend_note(smp_processor_id(), 2, a0, res.a0);
 	if (res.a1 == 1)
 		fpsimd_load_state(&c->fp);
@@ -154,13 +165,11 @@ int gz_lend_prepare(void)
 
 		if (!page)
 			return -ENOMEM;
-		if (gz_lend_crumb)
-			*(u64 *)(page_address(page) + GZ_LEND_SAVE_CRUMB) =
-				GZ_LEND_CRUMB_PA + GZ_LEND_CRUMB_EL2 + 64 * cpu;
 		__flush_dcache_area(page_address(page), PAGE_SIZE);
 		per_cpu(gz_lend_cpu, cpu).save_pa = page_to_phys(page);
 	}
 	gz_lend_shim_pa = __pa_symbol(__gz_lend_shim);
+	gz_lend_run_fn = (u64)kvm_ksym_ref(__kvm_vcpu_run_nvhe);
 	gz_lend_armed = true;
 	return 0;
 }

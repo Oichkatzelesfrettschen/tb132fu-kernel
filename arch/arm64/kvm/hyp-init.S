@@ -283,14 +283,15 @@ ENDPROC(__kvm_handle_stub_hvc)
 .endm
 
 ENTRY(__gz_lend_shim)
+	and	x9, x4, #1			// guest-run flag travels in bit 0
+	bic	x4, x4, #1
 	stp	x19, x20, [x4, #(GZL_X19 + 0x00)]
 	stp	x21, x22, [x4, #(GZL_X19 + 0x10)]
 	stp	x23, x24, [x4, #(GZL_X19 + 0x20)]
 	stp	x25, x26, [x4, #(GZL_X19 + 0x30)]
 	stp	x27, x28, [x4, #(GZL_X19 + 0x40)]
 	stp	x29, x30, [x4, #(GZL_X19 + 0x50)]
-	and	x27, x4, #1			// 1: guest run, KVM keeps its vectors
-	bic	x4, x4, #1
+	mov	x27, x9				// 1: guest run, KVM keeps its vectors
 	mov	x9, sp
 	str	x9, [x4, #GZL_SP]
 	mrs	x9, sp_el0

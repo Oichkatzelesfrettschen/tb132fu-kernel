@@ -95,6 +95,7 @@ static int gz_oracle_show(struct seq_file *m, void *v)
 #define GZ_LEND_ID	0xEF000E13UL
 
 extern char gz_lend_probe[];
+extern bool gz_lend_trace;
 
 static void gz_lend_stub_call(void *info)
 {
@@ -132,6 +133,10 @@ static ssize_t gz_lend_write(struct file *file, const char __user *ubuf,
 	if (copy_from_user(buf, ubuf, len))
 		return -EFAULT;
 	buf[len] = 0;
+	if (!strncmp(buf, "trace ", 6)) {
+		gz_lend_trace = buf[6] == '1';
+		return len;
+	}
 	if (!strncmp(buf, "prep", 4)) {
 		int err = gz_lend_prepare();
 

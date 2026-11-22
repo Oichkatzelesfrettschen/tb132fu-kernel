@@ -49,7 +49,7 @@ static DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
 static unsigned long gz_lend_shim_pa;
 static u64 gz_lend_run_fn __read_mostly = ~0ULL;
 static bool gz_lend_armed;
-bool gz_lend_trace = true;
+bool gz_lend_trace;
 
 /* The boot CPU records EL1 entry in __boot_cpu_mode[0] before this runs. */
 static int __init gz_lend_setup(char *s)

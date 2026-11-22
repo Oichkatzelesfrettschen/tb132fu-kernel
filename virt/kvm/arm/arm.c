@@ -1399,6 +1399,14 @@ static int hyp_init_cpu_pm_notifier(struct notifier_block *self,
 				    void *v)
 {
 	/*
+	 * With lent EL2 the KVM hyp context of a CPU lives in its save page
+	 * between calls and the lender restores its own EL2 state after a
+	 * power-down, so there is nothing to tear down or rebuild here.
+	 */
+	if (gz_lend_mode)
+		return NOTIFY_OK;
+
+	/*
 	 * kvm_arm_hardware_enabled is left with its old value over
 	 * PM_ENTER->PM_EXIT. It is used to indicate PM_EXIT should
 	 * re-enable hyp.

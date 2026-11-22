@@ -13,6 +13,9 @@
 #include <linux/kvm_host.h>
 #include <linux/mm.h>
 #include <linux/percpu.h>
+#include <linux/atomic.h>
+#include <linux/string.h>
+#include <linux/pfn.h>
 #include <linux/printk.h>
 #include <asm/cacheflush.h>
 #include <asm/fpsimd.h>
@@ -35,6 +38,46 @@ struct gz_lend_cpu {
 };
 
 static DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
+
+/*
+ * Debug breadcrumbs in the last page of the ramoops reservation, which keeps
+ * its contents across a watchdog reset. EL1 slots (one cache line per CPU at
+ * 0x000) are written through the linear map and cleaned to memory at once;
+ * EL2 slots (0x800 + 64 * cpu) are written only by the shim with the MMU off.
+ */
+#define GZ_LEND_CRUMB_PA	0x4816f000UL
+#define GZ_LEND_CRUMB_EL2	0x800
+#define GZ_LEND_SAVE_CRUMB	0x70
+
+static u64 *gz_lend_crumb;
+u64 gz_lend_crumb_prev[PAGE_SIZE / sizeof(u64)];
+static atomic_t gz_lend_seq;
+
+static void gz_lend_note(int cpu, u64 state, u64 a0, u64 a1)
+{
+	u64 *s;
+
+	if (!gz_lend_crumb)
+		return;
+	s = gz_lend_crumb + cpu * 8;
+	s[0] = state;
+	s[1] = atomic_inc_return(&gz_lend_seq);
+	s[2] = a0;
+	s[3] = a1;
+	__flush_dcache_area(s, 64);
+}
+
+static int __init gz_lend_crumb_init(void)
+{
+	if (!gz_lend_mode || !pfn_valid(PHYS_PFN(GZ_LEND_CRUMB_PA)))
+		return 0;
+	gz_lend_crumb = phys_to_virt(GZ_LEND_CRUMB_PA);
+	memcpy(gz_lend_crumb_prev, gz_lend_crumb, PAGE_SIZE);
+	memset(gz_lend_crumb, 0, PAGE_SIZE);
+	__flush_dcache_area(gz_lend_crumb, PAGE_SIZE);
+	return 0;
+}
+core_initcall(gz_lend_crumb_init);
 static unsigned long gz_lend_shim_pa;
 static bool gz_lend_armed;
 
@@ -63,8 +106,10 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 
 	local_irq_save(flags);
 	c = this_cpu_ptr(&gz_lend_cpu);
+	gz_lend_note(smp_processor_id(), 1, a0, a1);
 	arm_smccc_hvc(GZ_LEND_ID, gz_lend_shim_pa, a0, a1, a2, a3,
 		      c->save_pa, (unsigned long)&c->fp, &res);
+	gz_lend_note(smp_processor_id(), 2, a0, res.a0);
 	if (res.a1 == 1)
 		fpsimd_load_state(&c->fp);
 	local_irq_restore(flags);
@@ -102,6 +147,9 @@ int gz_lend_prepare(void)
 
 		if (!page)
 			return -ENOMEM;
+		if (gz_lend_crumb)
+			*(u64 *)(page_address(page) + GZ_LEND_SAVE_CRUMB) =
+				GZ_LEND_CRUMB_PA + GZ_LEND_CRUMB_EL2 + 64 * cpu;
 		__flush_dcache_area(page_address(page), PAGE_SIZE);
 		per_cpu(gz_lend_cpu, cpu).save_pa = page_to_phys(page);
 	}

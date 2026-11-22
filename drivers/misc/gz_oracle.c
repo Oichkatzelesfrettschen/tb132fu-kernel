@@ -154,8 +154,21 @@ static ssize_t gz_lend_write(struct file *file, const char __user *ubuf,
 	return len;
 }
 
+extern u64 gz_lend_crumb_prev[];
+
 static int gz_lend_show(struct seq_file *m, void *v)
 {
+	int i;
+
+	for (i = 0; i < PAGE_SIZE / 8; i += 4)
+		if (gz_lend_crumb_prev[i] | gz_lend_crumb_prev[i + 1] |
+		    gz_lend_crumb_prev[i + 2] | gz_lend_crumb_prev[i + 3])
+			seq_printf(m, "crumb %03x %016llx %016llx %016llx %016llx\n",
+				   i * 8, gz_lend_crumb_prev[i],
+				   gz_lend_crumb_prev[i + 1],
+				   gz_lend_crumb_prev[i + 2],
+				   gz_lend_crumb_prev[i + 3]);
+
 	seq_printf(m, "probe_pa %lx\n", (unsigned long)__pa_symbol(gz_lend_probe));
 	seq_printf(m, "last cpu%d pa=%lx %016lx %016lx %016lx %016lx\n",
 		   gz_lend_last_cpu, gz_lend_last.pa, gz_lend_last.res.a0,

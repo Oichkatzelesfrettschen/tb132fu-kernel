@@ -190,10 +190,20 @@ ENDPROC(__kvm_handle_stub_hvc)
 #define GZL_X19		0x00
 #define GZL_SP		0x60
 #define GZL_LIVE	0x68
+#define GZL_CRUMB	0x70
 #define GZL_G		0x080
 #define GZL_K		0x180
 #define GZL_SCTLR	(19 * 8)
 #define GZL_KSP		(20 * 8)
+
+/* Progress code into a physical cell that survives a reset; MMU off only. */
+.macro gzl_crumb code
+	ldr	x12, [x19, #GZL_CRUMB]
+	cbz	x12, 800f
+	mov	x13, #\code
+	str	x13, [x12]
+800:
+.endm
 
 .macro gzl_save base
 	mrs	x9, ttbr0_el2
@@ -299,6 +309,7 @@ ENTRY(__gz_lend_shim)
 	adr	x9, __kvm_hyp_init		// every current-EL vector there spins
 	msr	vbar_el2, x9
 	isb
+	gzl_crumb 0x2
 
 	ldr	x9, [x19, #GZL_LIVE]
 	cbz	x9, 5f
@@ -308,6 +319,7 @@ ENTRY(__gz_lend_shim)
 	isb
 	tlbi	alle2
 	dsb	sy
+	gzl_crumb 0x3
 	ldr	x10, [x19, #(GZL_K + GZL_KSP)]
 	ldr	x9, [x19, #(GZL_K + GZL_SCTLR)]
 	msr	sctlr_el2, x9
@@ -346,10 +358,12 @@ ENTRY(__gz_lend_shim)
 	dsb	sy
 	msr	sctlr_el2, x9
 	isb
+	gzl_crumb 0x5
 	gzl_save GZL_K
 	str	x11, [x19, #(GZL_K + GZL_SCTLR)]
 	str	x10, [x19, #(GZL_K + GZL_KSP)]
 	str	x26, [x19, #GZL_LIVE]
+	gzl_crumb 0x6
 	b	9f
 
 5:	/* No KVM context on this CPU yet. */
@@ -366,6 +380,7 @@ ENTRY(__gz_lend_shim)
 	 * Hyp init: x21 = pgd, x22 = stack, x23 = vectors, x24 = per-CPU
 	 * offset. Same register programming as __do_hyp_init.
 	 */
+	gzl_crumb 0x10
 	phys_to_ttbr x4, x21
 	msr	ttbr0_el2, x4
 	mrs	x4, tcr_el1
@@ -385,6 +400,7 @@ ENTRY(__gz_lend_shim)
 	isb
 	tlbi	alle2
 	dsb	sy
+	gzl_crumb 0x11
 	ldr	x4, =(SCTLR_EL2_RES1 | (SCTLR_ELx_FLAGS & ~SCTLR_ELx_A))
 	msr	sctlr_el2, x4
 	isb
@@ -405,6 +421,7 @@ ENTRY(__gz_lend_shim)
 	ldr	x9, [x19, #(GZL_G + GZL_SCTLR)]
 	msr	sctlr_el2, x9
 	isb
+	gzl_crumb 0x8
 	ldr	x9, [x19, #GZL_SP]
 	mov	sp, x9
 	mov	x0, x21

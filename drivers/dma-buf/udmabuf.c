@@ -13,8 +13,13 @@
 #include <linux/slab.h>
 #include <linux/udmabuf.h>
 
-static const u32    list_limit = 1024;  /* udmabuf_create_list->count limit */
-static const size_t size_limit_mb = 64; /* total dmabuf size, in megabytes  */
+static int list_limit = 1024;
+module_param(list_limit, int, 0644);
+MODULE_PARM_DESC(list_limit, "udmabuf_create_list->count limit. Default is 1024.");
+
+static int size_limit_mb = 64;
+module_param(size_limit_mb, int, 0644);
+MODULE_PARM_DESC(size_limit_mb, "Max size of a dmabuf, in megabytes. Default is 64.");
 
 struct udmabuf {
 	pgoff_t pagecount;
@@ -193,19 +198,24 @@ static long udmabuf_create(struct miscdevice *device,
 	if (!ubuf)
 		return -ENOMEM;
 
-	pglimit = (size_limit_mb * 1024 * 1024) >> PAGE_SHIFT;
+	pglimit = ((u64)size_limit_mb * 1024 * 1024) >> PAGE_SHIFT;
 	for (i = 0; i < head->count; i++) {
 		if (!IS_ALIGNED(list[i].offset, PAGE_SIZE))
 			goto err;
 		if (!IS_ALIGNED(list[i].size, PAGE_SIZE))
 			goto err;
 		ubuf->pagecount += list[i].size >> PAGE_SHIFT;
-		if (ubuf->pagecount > pglimit)
+		if (ubuf->pagecount > pglimit) {
+			pr_warn_ratelimited("udmabuf: %lu pages exceed the limit of %lu\n",
+					    ubuf->pagecount, pglimit);
 			goto err;
+		}
 	}
 
-	if (!ubuf->pagecount)
+	if (!ubuf->pagecount) {
+		pr_warn_ratelimited("udmabuf: empty buffer requested\n");
 		goto err;
+	}
 
 	ubuf->pages = kmalloc_array(ubuf->pagecount, sizeof(*ubuf->pages),
 				    GFP_KERNEL);

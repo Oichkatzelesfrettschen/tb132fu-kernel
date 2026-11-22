@@ -20,6 +20,7 @@
 #include <linux/uaccess.h>
 #include <asm/memory.h>
 #include <asm/virt.h>
+#include <asm/sysreg.h>
 
 #define GZ_ORACLE_ID	0xEF000E12UL
 #define GZ_ORACLE_NSEL	4
@@ -37,8 +38,32 @@ static void gz_oracle_call(void *info)
 		arm_smccc_hvc(GZ_ORACLE_ID, sel, 0, 0, 0, 0, 0, 0, &r->res[sel]);
 }
 
+struct gz_vtimer_read {
+	u64 cntv_ctl, cntv_cval, cntvct, cntp_ctl;
+};
+
+static void gz_vtimer_read(void *info)
+{
+	struct gz_vtimer_read *r = info;
+
+	r->cntv_ctl = read_sysreg(cntv_ctl_el0);
+	r->cntv_cval = read_sysreg(cntv_cval_el0);
+	r->cntvct = read_sysreg(cntvct_el0);
+	r->cntp_ctl = read_sysreg(cntp_ctl_el0);
+}
+
 static int gz_oracle_show(struct seq_file *m, void *v)
 {
+	struct gz_vtimer_read t;
+	int tcpu;
+
+	for_each_online_cpu(tcpu) {
+		if (smp_call_function_single(tcpu, gz_vtimer_read, &t, 1))
+			continue;
+		seq_printf(m, "cpu%d cntv_ctl %llx cntv_cval %llx cntvct %llx cntp_ctl %llx\n",
+			   tcpu, t.cntv_ctl, t.cntv_cval, t.cntvct, t.cntp_ctl);
+	}
+
 	struct gz_oracle_read r;
 	int cpu, sel;
 

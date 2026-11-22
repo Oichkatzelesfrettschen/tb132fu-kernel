@@ -25,6 +25,9 @@
 #include <asm/kvm_hyp.h>
 #include <asm/memory.h>
 #include <asm/virt.h>
+#include <asm/sysreg.h>
+#include <asm/barrier.h>
+#include <linux/smp.h>
 
 #define GZ_LEND_ID	0xEF000E13UL
 #define GZ_LEND_REJECT	0xffffffffUL
@@ -91,6 +94,7 @@ core_initcall(gz_lend_crumb_init);
 static unsigned long gz_lend_shim_pa;
 static u64 gz_lend_run_fn __read_mostly = ~0ULL;
 static bool gz_lend_armed;
+bool gz_lend_trace = true;
 
 /* The boot CPU records EL1 entry in __boot_cpu_mode[0] before this runs. */
 static int __init gz_lend_setup(char *s)
@@ -115,6 +119,9 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 	if (!gz_lend_armed)
 		return HVC_STUB_ERR;
 
+	if (gz_lend_trace)
+		pr_info("gz_lend: cpu%d call %llx %llx %llx %llx\n",
+			raw_smp_processor_id(), a0, a1, a2, a3);
 	local_irq_save(flags);
 	c = this_cpu_ptr(&gz_lend_cpu);
 	gz_lend_note(smp_processor_id(), 1, a0, a1);
@@ -150,6 +157,17 @@ int gz_lend_map_hyp(int cpu)
 	return create_hyp_mappings(&c->fp, &c->fp + 1, PAGE_HYP);
 }
 
+/*
+ * The host runs on the physical timer in lend mode. Whatever ran before may
+ * have left the EL1 virtual timer enabled with an expired compare value, and
+ * KVM enables that timer's interrupt on every CPU for its guests.
+ */
+static void gz_lend_quiesce_vtimer(void *unused)
+{
+	write_sysreg(0, cntv_ctl_el0);
+	isb();
+}
+
 /* Allocates the per-CPU save pages and removes them from the data caches. */
 int gz_lend_prepare(void)
 {
@@ -168,6 +186,7 @@ int gz_lend_prepare(void)
 		__flush_dcache_area(page_address(page), PAGE_SIZE);
 		per_cpu(gz_lend_cpu, cpu).save_pa = page_to_phys(page);
 	}
+	on_each_cpu(gz_lend_quiesce_vtimer, NULL, 1);
 	gz_lend_shim_pa = __pa_symbol(__gz_lend_shim);
 	gz_lend_run_fn = (u64)kvm_ksym_ref(__kvm_vcpu_run_nvhe);
 	gz_lend_armed = true;

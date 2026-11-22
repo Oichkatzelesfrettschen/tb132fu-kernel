@@ -7,6 +7,7 @@
  */
 #include <linux/arm-smccc.h>
 #include <linux/gfp.h>
+#include <linux/io.h>
 #include <linux/init.h>
 #include <linux/irqflags.h>
 #include <linux/kernel.h>
@@ -41,8 +42,8 @@ static DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
 
 /*
  * Debug breadcrumbs in the last page of the ramoops reservation, which keeps
- * its contents across a watchdog reset. EL1 slots (one cache line per CPU at
- * 0x000) are written through the linear map and cleaned to memory at once;
+ * its contents across a watchdog reset. EL1 slots (64 bytes per CPU at 0x000)
+ * are written through a device mapping;
  * EL2 slots (0x800 + 64 * cpu) are written only by the shim with the MMU off.
  */
 #define GZ_LEND_CRUMB_PA	0x4816f000UL
@@ -64,17 +65,22 @@ static void gz_lend_note(int cpu, u64 state, u64 a0, u64 a1)
 	s[1] = atomic_inc_return(&gz_lend_seq);
 	s[2] = a0;
 	s[3] = a1;
-	__flush_dcache_area(s, 64);
 }
 
 static int __init gz_lend_crumb_init(void)
 {
-	if (!gz_lend_mode || !pfn_valid(PHYS_PFN(GZ_LEND_CRUMB_PA)))
+	int i;
+
+	if (!gz_lend_mode)
 		return 0;
-	gz_lend_crumb = phys_to_virt(GZ_LEND_CRUMB_PA);
-	memcpy(gz_lend_crumb_prev, gz_lend_crumb, PAGE_SIZE);
-	memset(gz_lend_crumb, 0, PAGE_SIZE);
-	__flush_dcache_area(gz_lend_crumb, PAGE_SIZE);
+	/* The reservation is no-map, so it takes a device mapping. */
+	gz_lend_crumb = (u64 *)ioremap(GZ_LEND_CRUMB_PA, PAGE_SIZE);
+	if (!gz_lend_crumb)
+		return 0;
+	for (i = 0; i < PAGE_SIZE / sizeof(u64); i++) {
+		gz_lend_crumb_prev[i] = gz_lend_crumb[i];
+		gz_lend_crumb[i] = 0;
+	}
 	return 0;
 }
 core_initcall(gz_lend_crumb_init);

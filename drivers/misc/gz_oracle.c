@@ -70,7 +70,11 @@ static int gz_oracle_show(struct seq_file *m, void *v)
 #define GZ_LEND_ID	0xEF000E13UL
 
 extern char gz_lend_probe[];
-int gz_lend_arm(void);
+
+static void gz_lend_stub_call(void *info)
+{
+	*(u64 *)info = gz_lend_hyp_call(HVC_RESET_VECTORS, 0, 0, 0);
+}
 
 struct gz_lend_req {
 	unsigned long pa, a[4];
@@ -103,6 +107,26 @@ static ssize_t gz_lend_write(struct file *file, const char __user *ubuf,
 	if (copy_from_user(buf, ubuf, len))
 		return -EFAULT;
 	buf[len] = 0;
+	if (!strncmp(buf, "prep", 4)) {
+		int err = gz_lend_prepare();
+
+		return err ? err : len;
+	}
+	if (!strncmp(buf, "stub ", 5)) {
+		u64 rv = ~0ULL;
+		int scpu, err;
+
+		if (kstrtoint(strim(buf + 5), 10, &scpu) || scpu < 0 ||
+		    scpu >= nr_cpu_ids || !cpu_online(scpu))
+			return -EINVAL;
+		err = gz_lend_prepare();
+		if (err)
+			return err;
+		pr_info("gz_lend: stub reset call on cpu%d\n", scpu);
+		smp_call_function_single(scpu, gz_lend_stub_call, &rv, 1);
+		pr_info("gz_lend: stub reset call on cpu%d returned %llx\n", scpu, rv);
+		return len;
+	}
 	if (!strncmp(buf, "arm", 3)) {
 		int err = gz_lend_arm();
 

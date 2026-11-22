@@ -1598,6 +1598,12 @@ static int init_hyp_mode(void)
 			kvm_err("Cannot map host CPU state: %d\n", err);
 			goto out_err;
 		}
+
+		err = gz_lend_map_hyp(cpu);
+		if (err) {
+			kvm_err("Cannot map the lend FP buffer: %d\n", err);
+			goto out_err;
+		}
 	}
 
 	err = hyp_map_aux_data();

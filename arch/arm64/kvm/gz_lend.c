@@ -10,11 +10,13 @@
 #include <linux/init.h>
 #include <linux/irqflags.h>
 #include <linux/kernel.h>
+#include <linux/kvm_host.h>
 #include <linux/mm.h>
 #include <linux/percpu.h>
 #include <linux/printk.h>
 #include <asm/cacheflush.h>
 #include <asm/fpsimd.h>
+#include <asm/kvm_mmu.h>
 #include <asm/memory.h>
 #include <asm/virt.h>
 
@@ -73,17 +75,27 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 }
 
 /*
- * Allocates the per-CPU save pages, removes them from the data caches and
- * starts the deferred KVM initialisation.
+ * The shim stores the live FP/SIMD registers through the hyp mapping of the
+ * per-CPU buffer; 4.19 maps only kvm_host_cpu_state of the per-CPU area.
  */
-int gz_lend_arm(void)
+int gz_lend_map_hyp(int cpu)
 {
-	int cpu, ret;
+	struct gz_lend_cpu *c = &per_cpu(gz_lend_cpu, cpu);
+
+	if (!gz_lend_mode)
+		return 0;
+	return create_hyp_mappings(&c->fp, &c->fp + 1, PAGE_HYP);
+}
+
+/* Allocates the per-CPU save pages and removes them from the data caches. */
+int gz_lend_prepare(void)
+{
+	int cpu;
 
 	if (!gz_lend_mode)
 		return -ENODEV;
 	if (gz_lend_armed)
-		return -EBUSY;
+		return 0;
 
 	for_each_possible_cpu(cpu) {
 		struct page *page = alloc_page(GFP_KERNEL | __GFP_ZERO);
@@ -95,6 +107,21 @@ int gz_lend_arm(void)
 	}
 	gz_lend_shim_pa = __pa_symbol(__gz_lend_shim);
 	gz_lend_armed = true;
+	return 0;
+}
+
+/* Starts the deferred KVM initialisation on lent EL2. */
+int gz_lend_arm(void)
+{
+	static bool done;
+	int ret;
+
+	ret = gz_lend_prepare();
+	if (ret)
+		return ret;
+	if (done)
+		return -EBUSY;
+	done = true;
 
 	ret = kvm_arm_gz_lend_late_init();
 	pr_info("gz_lend: armed, shim at %lx, kvm init %d\n", gz_lend_shim_pa, ret);

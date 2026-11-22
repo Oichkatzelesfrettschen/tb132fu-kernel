@@ -82,6 +82,10 @@ void __hyp_reset_vectors(void);
  * the gz_lend call; KVM then uses its non-VHE hyp code through that call.
  */
 extern bool gz_lend_mode;
+int gz_lend_map_hyp(int cpu);
+int gz_lend_prepare(void);
+int gz_lend_arm(void);
+u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3);
 
 static inline bool is_hyp_mode_available(void)
 {

@@ -39,10 +39,22 @@ static inline unsigned long get_linear_memory_size(void)
 #define PSCI_1_1_RESET2_TYPE_VENDOR     \
 	(1 << PSCI_1_1_RESET2_TYPE_VENDOR_SHIFT)
 
+/*
+ * The vendor SYSTEM_RESET2 keeps DRAM for a RAM dump. On this board that
+ * reset leaves the boot ROM unable to start the preloader until the PMIC
+ * power-cycles the unit about 12 minutes later. aee_plain_restart=1 takes
+ * the restart-handler path an ordinary reboot uses instead.
+ */
+static bool aee_plain_restart = true;
+core_param(aee_plain_restart, aee_plain_restart, bool, 0644);
+
 static void aee_exception_reboot(void)
 {
 	struct arm_smccc_res res;
 	int opt1 = 1, opt2 = 0;
+
+	if (aee_plain_restart)
+		emergency_restart();
 
 	arm_smccc_smc(PSCI_1_1_FN_SYSTEM_RESET2,
 		PSCI_1_1_RESET2_TYPE_VENDOR | opt1,

@@ -441,6 +441,16 @@ ENTRY(__gz_lend_shim)
 
 9:	/* Reinstall the lender's EL2 context and return to it. */
 	gzl_load GZL_G
+	/*
+	 * CNTVOFF_EL2 stays KVM's between hyp calls: the host evaluates a
+	 * loaded guest timer at EL1 against it, and __kvm_timer_set_cntvoff
+	 * clears it again at vcpu_put.
+	 */
+	ldr	x9, [x19, #GZL_LIVE]
+	cbz	x9, 91f
+	ldr	x9, [x19, #(GZL_K + 96)]
+	msr	cntvoff_el2, x9
+91:
 	isb
 	tlbi	alle2
 	dsb	sy

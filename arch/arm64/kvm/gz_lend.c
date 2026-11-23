@@ -137,11 +137,10 @@ int gz_lend_map_hyp(int cpu)
 }
 
 /*
- * CPUs on which a guest may be entered through the lend. Guest runs on the
- * Cortex-A78 cores of the first target stop that CPU, so the default covers
- * the Cortex-A55 cores; gz_lend.vcpu_cpus= widens it.
+ * CPUs on which a guest may be entered through the lend; a debugging aid
+ * that confines vCPU threads to a subset.
  */
-static unsigned long gz_lend_vcpu_cpus = 0x0f;
+static unsigned long gz_lend_vcpu_cpus = ~0UL;
 core_param(gz_lend_vcpu_cpus, gz_lend_vcpu_cpus, ulong, 0644);
 
 bool gz_lend_vcpu_cpu_ok(void)

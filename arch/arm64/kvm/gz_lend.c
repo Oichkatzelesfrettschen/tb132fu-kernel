@@ -91,6 +91,10 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 	if (res.a1 == 1)
 		fpsimd_load_state(&c->fp);
 	local_irq_restore(flags);
+	if (gz_lend_trace)
+		pr_info("gz_lend: cpu%d ret %lx fp %lx run %d\n",
+			raw_smp_processor_id(), res.a0, res.a1,
+			a0 == gz_lend_run_fn);
 
 	WARN_ONCE(res.a0 == GZ_LEND_REJECT && res.a1 == 0 && a0 < HVC_STUB_HCALL_NR,
 		  "gz_lend: hypervisor rejected the lend call\n");

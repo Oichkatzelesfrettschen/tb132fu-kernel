@@ -859,6 +859,51 @@ int create_hyp_io_mappings(phys_addr_t phys_addr, size_t size,
 }
 
 /**
+ * create_hyp_fixed_exec_mapping - Map one executable page at a given HYP VA
+ * @hyp_va:	Page-aligned HYP VA in the idmap half of the HYP address space
+ * @phys_addr:	The physical address of the page
+ * @pteval:	The resulting last-level entry, read back from the tables
+ *
+ * The private mappings grow down from the idmap page; the VA has to lie
+ * at least 16 MiB below them.
+ */
+int create_hyp_fixed_exec_mapping(unsigned long hyp_va, phys_addr_t phys_addr,
+				  u64 *pteval)
+{
+	pgd_t *pgdp = hyp_pgd, *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	int ret = 0;
+
+	if (is_kernel_in_hyp_mode() || !PAGE_ALIGNED(hyp_va) ||
+	    !PAGE_ALIGNED(phys_addr))
+		return -EINVAL;
+
+	mutex_lock(&kvm_hyp_pgd_mutex);
+	if (((hyp_va ^ io_map_base) & BIT(VA_BITS - 1)) ||
+	    hyp_va + PAGE_SIZE + SZ_16M > io_map_base)
+		ret = -EBUSY;
+	mutex_unlock(&kvm_hyp_pgd_mutex);
+	if (ret)
+		return ret;
+
+	if (__kvm_cpu_uses_extended_idmap())
+		pgdp = boot_hyp_pgd;
+
+	ret = __create_hyp_mappings(pgdp, __kvm_idmap_ptrs_per_pgd(),
+				    hyp_va, hyp_va + PAGE_SIZE,
+				    __phys_to_pfn(phys_addr), PAGE_HYP_EXEC);
+	if (ret)
+		return ret;
+
+	pgd = pgdp + kvm_pgd_index(hyp_va, __kvm_idmap_ptrs_per_pgd());
+	pud = pud_offset(pgd, hyp_va);
+	pmd = pmd_offset(pud, hyp_va);
+	*pteval = pte_val(*pte_offset_kernel(pmd, hyp_va));
+	return 0;
+}
+
+/**
  * create_hyp_exec_mappings - Map an executable range into HYP
  * @phys_addr:	The physical start address which gets mapped
  * @size:	Size of the region being mapped

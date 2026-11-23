@@ -28,7 +28,8 @@
 #define CREATE_TRACE_POINTS
 #include "trace.h"
 
-struct vgic_global kvm_vgic_global_state __ro_after_init = {
+/* Written by the deferred KVM initialisation when EL2 is lent after boot. */
+struct vgic_global kvm_vgic_global_state = {
 	.gicv3_cpuif = STATIC_KEY_FALSE_INIT,
 };
 

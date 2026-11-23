@@ -732,7 +732,7 @@ struct task_struct {
 	struct uclamp_se		uclamp[UCLAMP_CNT];
 #endif
 
-#ifdef CONFIG_PREEMPT_NOTIFIERS
+#if defined(CONFIG_PREEMPT_NOTIFIERS) && !defined(CONFIG_ARM64)
 	/* List of struct preempt_notifier: */
 	struct hlist_head		preempt_notifiers;
 #endif
@@ -1359,7 +1359,16 @@ struct task_struct {
 	 * structure.  It *MUST* be at the end of 'task_struct'.
 	 *
 	 * Do not put anything below here!
+	 *
+	 * The arm64 thread_struct has a fixed size, so the notifier list sits
+	 * after it: every member the prebuilt modules index keeps its offset
+	 * with and without CONFIG_PREEMPT_NOTIFIERS.
 	 */
+#if defined(CONFIG_PREEMPT_NOTIFIERS) && defined(CONFIG_ARM64) && \
+	!defined(__GENKSYMS__)
+	/* List of struct preempt_notifier: */
+	struct hlist_head		preempt_notifiers;
+#endif
 };
 
 static inline struct pid *task_pid(struct task_struct *task)

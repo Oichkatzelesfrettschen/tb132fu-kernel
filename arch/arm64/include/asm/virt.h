@@ -77,10 +77,27 @@ void __hyp_set_vectors(phys_addr_t phys_vector_base);
 void __hyp_reset_vectors(void);
 
 /* Reports the availability of HYP mode */
+/*
+ * Set when the kernel runs at EL1 under a hypervisor that lends EL2 through
+ * the gz_lend call; KVM then uses its non-VHE hyp code through that call.
+ */
+#ifdef CONFIG_KVM_ARM_HOST
+extern bool gz_lend_mode;
+int gz_lend_map_hyp(int cpu);
+int gz_lend_prepare(void);
+int gz_lend_arm(void);
+bool gz_lend_vcpu_cpu_ok(void);
+int gz_lend_pin_vcpu_thread(void);
+u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3);
+bool gz_lend_fault_is_el3_upcall(unsigned long elr);
+#else
+#define gz_lend_mode	false
+#endif
+
 static inline bool is_hyp_mode_available(void)
 {
 	return (__boot_cpu_mode[0] == BOOT_CPU_MODE_EL2 &&
-		__boot_cpu_mode[1] == BOOT_CPU_MODE_EL2);
+		__boot_cpu_mode[1] == BOOT_CPU_MODE_EL2) || gz_lend_mode;
 }
 
 /* Check if the bootloader has booted CPUs in different modes */

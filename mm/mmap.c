@@ -48,6 +48,7 @@
 #include <linux/sched/mm.h>
 
 #include <linux/uaccess.h>
+#include <linux/wrapfd.h>
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
 #include <asm/mmu_context.h>
@@ -3036,6 +3037,13 @@ SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 					min(tmp->vm_end, start + size));
 		}
 	}
+
+	/*
+	 * A wrapfd mapping points vm_file at the wrapped buffer, so remapping would
+	 * bypass the protection the wrapfd enforces.
+	 */
+	if (unlikely(is_wrapfd_vma(vma)))
+		goto out;
 
 	file = get_file(vma->vm_file);
 	ret = do_mmap_pgoff(vma->vm_file, start, size,

@@ -130,6 +130,7 @@ Code  Seq#(hex)	Include File		Comments
 'H'	02	linux/mei.h		conflict!
 'H'	03	linux/mei.h		conflict!
 'H'	00-0F	sound/asound.h		conflict!
+'H'	00	uapi/linux/dma-heap.h	conflict!
 'H'	20-40	sound/asound_fm.h	conflict!
 'H'	80-8F	sound/sfnt_info.h	conflict!
 'H'	10-8F	sound/emu10k1.h		conflict!
@@ -272,6 +273,7 @@ Code  Seq#(hex)	Include File		Comments
 't'	90-91	linux/toshiba.h		toshiba and toshiba_acpi SMM
 'u'	00-1F	linux/smb_fs.h		gone
 'u'	20-3F	linux/uvcvideo.h	USB video class host driver
+'u'	40-4f	linux/udmabuf.h		userspace dma-buf misc device
 'v'	00-1F	linux/ext2_fs.h		conflict!
 'v'	00-1F	linux/fs.h		conflict!
 'v'	00-0F	linux/sonypi.h		conflict!

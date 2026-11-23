@@ -66,3 +66,13 @@ config ANDROID_BINDER_USER_TRACKING
 endif # if ANDROID
 
 endmenu
+
+config ANDROID_WRAPFD_LEGACY
+	bool "Android wrapfd device"
+	depends on DMA_SHARED_BUFFER && MMU
+	help
+	  Registers /dev/wrapfd, which wraps a dma-buf file descriptor in a
+	  file descriptor with its own mapping protection, ownership and
+	  content-load rules. Android NPU buffer allocation opens this node.
+
+	  If unsure, say N.

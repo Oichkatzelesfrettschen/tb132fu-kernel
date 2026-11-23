@@ -1183,6 +1183,14 @@ static int kbase_mem_umm_map_attachment(struct kbase_context *kctx,
 	WARN_ON_ONCE(alloc->imported.umm.sgt);
 
 #if IS_ENABLED(CONFIG_MTK_IOMMU_V2)
+	/*
+	 * A dma-buf from an exporter other than ION carries no ION handle and
+	 * needs no M4U port configuration: its sg_table already holds the
+	 * physical pages that the GPU MMU maps.
+	 */
+	if (!alloc->imported.umm.ion_handle)
+		goto map_attachment;
+
 	mutex_lock(&ion_config_lock);
 
 	mm_data.mm_cmd = ION_MM_CONFIG_BUFFER;
@@ -1206,13 +1214,16 @@ retry:
 		mutex_unlock(&ion_config_lock);
 		return -EINVAL;
 	}
+
+map_attachment:
 #endif
 
 	sgt = dma_buf_map_attachment(alloc->imported.umm.dma_attachment,
 			DMA_BIDIRECTIONAL);
 
 #if IS_ENABLED(CONFIG_MTK_IOMMU_V2)
-	mutex_unlock(&ion_config_lock);
+	if (alloc->imported.umm.ion_handle)
+		mutex_unlock(&ion_config_lock);
 #endif
 
 	if (IS_ERR_OR_NULL(sgt))
@@ -1557,12 +1568,20 @@ static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx,
 
 	ion_handle = ion_import_dma_buf(kctx->kbdev->client, dma_buf);
 
+	reg->gpu_alloc->imported.umm.ion_client = kctx->kbdev->client;
+	reg->gpu_alloc->imported.umm.ion_handle = NULL;
+
+	/*
+	 * ion_import_dma_buf() returns -EINVAL for every exporter except ION;
+	 * such a buffer maps without an ION handle. Any other error is a
+	 * failed import of an ION buffer.
+	 */
 	if (IS_ERR(ion_handle)) {
-		dev_warn(kctx->kbdev->dev, "import ion handle failed!\n");
-		return NULL;
+		if (PTR_ERR(ion_handle) != -EINVAL)
+			goto error_out;
+		ion_handle = NULL;
 	}
 
-	reg->gpu_alloc->imported.umm.ion_client = kctx->kbdev->client;
 	reg->gpu_alloc->imported.umm.ion_handle = ion_handle;
 #endif
 
@@ -1574,8 +1593,10 @@ static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx,
 		err = kbase_mem_umm_map_attachment(kctx, reg);
 		if (err) {
 #if IS_ENABLED(CONFIG_MTK_IOMMU_V2)
-			ion_free(kctx->kbdev->client, ion_handle);
+			if (ion_handle)
+				ion_free(kctx->kbdev->client, ion_handle);
 			ion_handle = NULL;
+			reg->gpu_alloc->imported.umm.ion_handle = NULL;
 #endif
 			dev_warn(kctx->kbdev->dev,
 				 "Failed to map dma-buf %pK on GPU: %d\n",

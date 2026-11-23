@@ -1,0 +1,7 @@
+config DMABUF_HEAPS_MTK_ION_SYSTEM
+	bool "DMA-BUF System Heap backed by the MediaTek ION multimedia heap"
+	depends on DMABUF_HEAPS && MTK_ION
+	help
+	  Registers /dev/dma_heap/system. Each allocation comes from the ION
+	  multimedia heap and leaves as an ION dma-buf, so ion_import_dma_buf()
+	  and the ION multimedia IOVA commands accept it.

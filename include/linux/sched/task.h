@@ -78,6 +78,11 @@ static inline void uclamp_exit_task(struct task_struct *p) { }
 #endif /* CONFIG_UCLAMP_TASK */
 
 extern void exit_files(struct task_struct *);
+#ifdef CONFIG_ANDROID_BINDER_IPC
+extern void binder_thread_group_exit(struct task_struct *tsk);
+#else
+static inline void binder_thread_group_exit(struct task_struct *tsk) { }
+#endif
 extern void exit_itimers(struct signal_struct *);
 
 extern long _do_fork(unsigned long, unsigned long, unsigned long, int __user *, int __user *, unsigned long);

@@ -532,7 +532,11 @@ static void update_vttbr(struct kvm *kvm)
 	/* First user of a new VMID generation? */
 	if (unlikely(kvm_next_vmid == 0)) {
 		atomic64_inc(&kvm_vmid_gen);
-		kvm_next_vmid = 1;
+		/*
+		 * The lending hypervisor tags its own stage-2 entries with
+		 * 8-bit VMIDs; guests take VMIDs above that range.
+		 */
+		kvm_next_vmid = (gz_lend_mode && kvm_vmid_bits > 8) ? 0x100 : 1;
 
 		/*
 		 * On SMP we know no other CPUs can use this CPU's or each
@@ -725,6 +729,15 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *run)
 		 * involves poking the GIC, which must be done in a
 		 * non-preemptible context.
 		 */
+		if (gz_lend_mode) {
+			int err = gz_lend_pin_vcpu_thread();
+
+			if (err) {
+				ret = err;
+				break;
+			}
+		}
+
 		preempt_disable();
 
 		kvm_pmu_flush_hwstate(vcpu);
@@ -766,7 +779,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *run)
 		smp_store_mb(vcpu->mode, IN_GUEST_MODE);
 
 		if (ret <= 0 || need_new_vmid_gen(vcpu->kvm) ||
-		    kvm_request_pending(vcpu)) {
+		    kvm_request_pending(vcpu) ||
+		    (gz_lend_mode && !gz_lend_vcpu_cpu_ok())) {
 			vcpu->mode = OUTSIDE_GUEST_MODE;
 			isb(); /* Ensure work in x_flush_hwstate is committed */
 			kvm_pmu_sync_hwstate(vcpu);
@@ -1395,6 +1409,14 @@ static int hyp_init_cpu_pm_notifier(struct notifier_block *self,
 				    void *v)
 {
 	/*
+	 * With lent EL2 the KVM hyp context of a CPU lives in its save page
+	 * between calls and the lender restores its own EL2 state after a
+	 * power-down, so there is nothing to tear down or rebuild here.
+	 */
+	if (gz_lend_mode)
+		return NOTIFY_OK;
+
+	/*
 	 * kvm_arm_hardware_enabled is left with its old value over
 	 * PM_ENTER->PM_EXIT. It is used to indicate PM_EXIT should
 	 * re-enable hyp.
@@ -1427,11 +1449,11 @@ static struct notifier_block hyp_init_cpu_pm_nb = {
 	.notifier_call = hyp_init_cpu_pm_notifier,
 };
 
-static void __init hyp_cpu_pm_init(void)
+static void hyp_cpu_pm_init(void)
 {
 	cpu_pm_register_notifier(&hyp_init_cpu_pm_nb);
 }
-static void __init hyp_cpu_pm_exit(void)
+static void hyp_cpu_pm_exit(void)
 {
 	cpu_pm_unregister_notifier(&hyp_init_cpu_pm_nb);
 }
@@ -1594,6 +1616,12 @@ static int init_hyp_mode(void)
 			kvm_err("Cannot map host CPU state: %d\n", err);
 			goto out_err;
 		}
+
+		err = gz_lend_map_hyp(cpu);
+		if (err) {
+			kvm_err("Cannot map the lend FP buffer: %d\n", err);
+			goto out_err;
+		}
 	}
 
 	err = hyp_map_aux_data();
@@ -1729,9 +1757,22 @@ void kvm_arch_exit(void)
 	kvm_perf_teardown();
 }
 
+/*
+ * With lent EL2 the hyp setup issues calls into the lending hypervisor, so
+ * it runs when gz_lend is armed from userspace instead of at initcall time.
+ */
+int kvm_arm_gz_lend_late_init(void)
+{
+	return kvm_init(NULL, sizeof(struct kvm_vcpu), 0, THIS_MODULE);
+}
+
 static int arm_init(void)
 {
-	int rc = kvm_init(NULL, sizeof(struct kvm_vcpu), 0, THIS_MODULE);
+	int rc;
+
+	if (gz_lend_mode)
+		return 0;
+	rc = kvm_init(NULL, sizeof(struct kvm_vcpu), 0, THIS_MODULE);
 	return rc;
 }
 

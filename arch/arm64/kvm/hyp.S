@@ -40,6 +40,11 @@
  * arch/arm64/kernel/hyp_stub.S.
  */
 ENTRY(__kvm_call_hyp)
+	adr_l	x9, gz_lend_mode
+	ldrb	w9, [x9]
+	cbz	w9, 99f
+	b	gz_lend_hyp_call
+99:
 alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
 	hvc	#0
 	ret

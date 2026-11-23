@@ -64,7 +64,7 @@ void __mmu_notifier_release(struct mm_struct *mm)
 	 * ->release returns.
 	 */
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist)
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist)
 		/*
 		 * If ->release runs before mmu_notifier_unregister it must be
 		 * handled, as it's the only way for the driver to flush all
@@ -74,9 +74,9 @@ void __mmu_notifier_release(struct mm_struct *mm)
 		if (mn->ops->release)
 			mn->ops->release(mn, mm);
 
-	spin_lock(&mm->mmu_notifier_mm->lock);
-	while (unlikely(!hlist_empty(&mm->mmu_notifier_mm->list))) {
-		mn = hlist_entry(mm->mmu_notifier_mm->list.first,
+	spin_lock(&mm_mmu_notifier_mm(mm)->lock);
+	while (unlikely(!hlist_empty(&mm_mmu_notifier_mm(mm)->list))) {
+		mn = hlist_entry(mm_mmu_notifier_mm(mm)->list.first,
 				 struct mmu_notifier,
 				 hlist);
 		/*
@@ -87,7 +87,7 @@ void __mmu_notifier_release(struct mm_struct *mm)
 		 */
 		hlist_del_init_rcu(&mn->hlist);
 	}
-	spin_unlock(&mm->mmu_notifier_mm->lock);
+	spin_unlock(&mm_mmu_notifier_mm(mm)->lock);
 	srcu_read_unlock(&srcu, id);
 
 	/*
@@ -115,7 +115,7 @@ int __mmu_notifier_clear_flush_young(struct mm_struct *mm,
 	int young = 0, id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		if (mn->ops->clear_flush_young)
 			young |= mn->ops->clear_flush_young(mn, mm, start, end);
 	}
@@ -132,7 +132,7 @@ int __mmu_notifier_clear_young(struct mm_struct *mm,
 	int young = 0, id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		if (mn->ops->clear_young)
 			young |= mn->ops->clear_young(mn, mm, start, end);
 	}
@@ -148,7 +148,7 @@ int __mmu_notifier_test_young(struct mm_struct *mm,
 	int young = 0, id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		if (mn->ops->test_young) {
 			young = mn->ops->test_young(mn, mm, address);
 			if (young)
@@ -167,7 +167,7 @@ void __mmu_notifier_change_pte(struct mm_struct *mm, unsigned long address,
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		if (mn->ops->change_pte)
 			mn->ops->change_pte(mn, mm, address, pte);
 	}
@@ -183,7 +183,7 @@ int __mmu_notifier_invalidate_range_start(struct mm_struct *mm,
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		if (mn->ops->invalidate_range_start) {
 			int _ret = mn->ops->invalidate_range_start(mn, mm, start, end, blockable);
 			if (_ret) {
@@ -209,7 +209,7 @@ void __mmu_notifier_invalidate_range_end(struct mm_struct *mm,
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		/*
 		 * Call invalidate_range here too to avoid the need for the
 		 * subsystem of having to register an invalidate_range_end
@@ -239,7 +239,7 @@ void __mmu_notifier_invalidate_range(struct mm_struct *mm,
 	int id;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		if (mn->ops->invalidate_range)
 			mn->ops->invalidate_range(mn, mm, start, end);
 	}
@@ -263,7 +263,7 @@ bool mm_has_blockable_invalidate_notifiers(struct mm_struct *mm)
 		return ret;
 
 	id = srcu_read_lock(&srcu);
-	hlist_for_each_entry_rcu(mn, &mm->mmu_notifier_mm->list, hlist) {
+	hlist_for_each_entry_rcu(mn, &mm_mmu_notifier_mm(mm)->list, hlist) {
 		if (!mn->ops->invalidate_range &&
 		    !mn->ops->invalidate_range_start &&
 		    !mn->ops->invalidate_range_end)
@@ -302,7 +302,7 @@ static int do_mmu_notifier_register(struct mmu_notifier *mn,
 		INIT_HLIST_HEAD(&mmu_notifier_mm->list);
 		spin_lock_init(&mmu_notifier_mm->lock);
 
-		mm->mmu_notifier_mm = mmu_notifier_mm;
+		mm_mmu_notifier_mm(mm) = mmu_notifier_mm;
 		mmu_notifier_mm = NULL;
 	}
 	mmgrab(mm);
@@ -315,9 +315,9 @@ static int do_mmu_notifier_register(struct mmu_notifier *mn,
 	 * We can't race against any other mmu notifier method either
 	 * thanks to mm_take_all_locks().
 	 */
-	spin_lock(&mm->mmu_notifier_mm->lock);
-	hlist_add_head_rcu(&mn->hlist, &mm->mmu_notifier_mm->list);
-	spin_unlock(&mm->mmu_notifier_mm->lock);
+	spin_lock(&mm_mmu_notifier_mm(mm)->lock);
+	hlist_add_head_rcu(&mn->hlist, &mm_mmu_notifier_mm(mm)->list);
+	spin_unlock(&mm_mmu_notifier_mm(mm)->lock);
 
 	mm_drop_all_locks(mm);
 out_clean:
@@ -361,9 +361,9 @@ EXPORT_SYMBOL_GPL(__mmu_notifier_register);
 /* this is called after the last mmu_notifier_unregister() returned */
 void __mmu_notifier_mm_destroy(struct mm_struct *mm)
 {
-	BUG_ON(!hlist_empty(&mm->mmu_notifier_mm->list));
-	kfree(mm->mmu_notifier_mm);
-	mm->mmu_notifier_mm = LIST_POISON1; /* debug */
+	BUG_ON(!hlist_empty(&mm_mmu_notifier_mm(mm)->list));
+	kfree(mm_mmu_notifier_mm(mm));
+	mm_mmu_notifier_mm(mm) = LIST_POISON1; /* debug */
 }
 
 /*
@@ -396,13 +396,13 @@ void mmu_notifier_unregister(struct mmu_notifier *mn, struct mm_struct *mm)
 			mn->ops->release(mn, mm);
 		srcu_read_unlock(&srcu, id);
 
-		spin_lock(&mm->mmu_notifier_mm->lock);
+		spin_lock(&mm_mmu_notifier_mm(mm)->lock);
 		/*
 		 * Can not use list_del_rcu() since __mmu_notifier_release
 		 * can delete it before we hold the lock.
 		 */
 		hlist_del_init_rcu(&mn->hlist);
-		spin_unlock(&mm->mmu_notifier_mm->lock);
+		spin_unlock(&mm_mmu_notifier_mm(mm)->lock);
 	}
 
 	/*
@@ -423,13 +423,13 @@ EXPORT_SYMBOL_GPL(mmu_notifier_unregister);
 void mmu_notifier_unregister_no_release(struct mmu_notifier *mn,
 					struct mm_struct *mm)
 {
-	spin_lock(&mm->mmu_notifier_mm->lock);
+	spin_lock(&mm_mmu_notifier_mm(mm)->lock);
 	/*
 	 * Can not use list_del_rcu() since __mmu_notifier_release
 	 * can delete it before we hold the lock.
 	 */
 	hlist_del_init_rcu(&mn->hlist);
-	spin_unlock(&mm->mmu_notifier_mm->lock);
+	spin_unlock(&mm_mmu_notifier_mm(mm)->lock);
 
 	BUG_ON(atomic_read(&mm->mm_count) <= 0);
 	mmdrop(mm);

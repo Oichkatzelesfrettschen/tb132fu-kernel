@@ -341,12 +341,30 @@ ENTRY(__gz_lend_shim)
 	mov	x2, x24
 	blr	x9
 	mov	x21, x0
+	/*
+	 * The hyp call can return with FP/SIMD access trapped to EL2;
+	 * the shim needs the registers, so it clears the trap itself.
+	 */
+	mrs	x10, cptr_el2
+	mov	x11, x10
+	bic	x10, x10, #CPTR_EL2_TFP
+	msr	cptr_el2, x10
+	isb
 	mov	x9, x20
 	kern_hyp_va	x9
 	fpsimd_save	x9, 10
 	mov	x25, #1
 	msr	vbar_el2, x28
-	b	4f
+	mov	x10, sp
+	mrs	x12, sctlr_el2
+	bic	x9, x12, #SCTLR_ELx_M
+	dsb	sy
+	msr	sctlr_el2, x9
+	isb
+	mov	x23, x11			// CPTR_EL2 as the call left it
+	mrs	x24, hcr_el2
+	mov	x11, x12
+	b	41f
 
 3:	/* Stub call against a live context. */
 	msr	vbar_el2, x28
@@ -367,6 +385,7 @@ ENTRY(__gz_lend_shim)
 	dsb	sy
 	msr	sctlr_el2, x9
 	isb
+41:
 	gzl_save GZL_K
 	str	x11, [x19, #(GZL_K + GZL_SCTLR)]
 	str	x10, [x19, #(GZL_K + GZL_KSP)]

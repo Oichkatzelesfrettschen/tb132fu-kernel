@@ -28,6 +28,10 @@
 #include <asm/sysreg.h>
 #include <asm/barrier.h>
 #include <linux/smp.h>
+#include <linux/cpumask.h>
+#include <linux/sched.h>
+#include <linux/moduleparam.h>
+#include <linux/bitops.h>
 
 #define GZ_LEND_ID	0xEF000E13UL
 #define GZ_LEND_REJECT	0xffffffffUL
@@ -112,6 +116,32 @@ int gz_lend_map_hyp(int cpu)
 	if (!gz_lend_mode)
 		return 0;
 	return create_hyp_mappings(&c->fp, &c->fp + 1, PAGE_HYP);
+}
+
+/*
+ * CPUs on which a guest may be entered through the lend. Guest runs on the
+ * Cortex-A78 cores of the first target stop that CPU, so the default covers
+ * the Cortex-A55 cores; gz_lend.vcpu_cpus= widens it.
+ */
+static unsigned long gz_lend_vcpu_cpus = 0x0f;
+core_param(gz_lend_vcpu_cpus, gz_lend_vcpu_cpus, ulong, 0644);
+
+bool gz_lend_vcpu_cpu_ok(void)
+{
+	return gz_lend_vcpu_cpus & BIT(raw_smp_processor_id());
+}
+
+/* Moves the calling vCPU thread onto the permitted CPUs; may sleep. */
+void gz_lend_pin_vcpu_thread(void)
+{
+	cpumask_t mask;
+
+	cpumask_clear(&mask);
+	*cpumask_bits(&mask) = gz_lend_vcpu_cpus;
+	cpumask_and(&mask, &mask, cpu_online_mask);
+	if (cpumask_empty(&mask) || cpumask_subset(&current->cpus_allowed, &mask))
+		return;
+	set_cpus_allowed_ptr(current, &mask);
 }
 
 /*

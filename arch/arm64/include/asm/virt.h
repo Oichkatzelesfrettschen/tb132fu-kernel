@@ -85,6 +85,8 @@ extern bool gz_lend_mode;
 int gz_lend_map_hyp(int cpu);
 int gz_lend_prepare(void);
 int gz_lend_arm(void);
+bool gz_lend_vcpu_cpu_ok(void);
+void gz_lend_pin_vcpu_thread(void);
 u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3);
 
 static inline bool is_hyp_mode_available(void)

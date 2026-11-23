@@ -211,6 +211,20 @@ el2_error:
 	eret
 
 ENTRY(__hyp_do_panic)
+	/*
+	 * On lent EL2 the host is not reachable by eret: unwind through the
+	 * idmap exit of the lend shim, which hands EL2 back to the lender.
+	 * x2 = ELR_EL2, x3 = ESR_EL2, x4 = FAR_EL2 of the fault.
+	 */
+	hyp_adr_this_cpu x9, gz_lend_cpu, x10
+	ldr	x19, [x9, #0x210]
+	cbz	x19, 1f
+	ldr	x10, [x9, #0x218]
+	mov	x23, x3
+	mov	x24, x2
+	mov	x25, x4
+	br	x10
+1:
 	mov	lr, #(PSR_F_BIT | PSR_I_BIT | PSR_A_BIT | PSR_D_BIT |\
 		      PSR_MODE_EL1h)
 	msr	spsr_el2, lr

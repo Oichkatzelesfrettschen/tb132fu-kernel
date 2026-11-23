@@ -464,6 +464,22 @@ __gz_lend_fault:
 	movk	x21, #0xdead, lsl #16
 	b	9b
 
+/*
+ * Entered from __hyp_do_panic at this code's identity address with KVM's
+ * hyp tables live: x19 = save page, x23/x24/x25 = ESR/ELR/FAR of the panic.
+ */
+ENTRY(__gz_lend_fault_run)
+	mrs	x9, sctlr_el2
+	bic	x9, x9, #SCTLR_ELx_M
+	dsb	sy
+	msr	sctlr_el2, x9
+	isb
+	str	xzr, [x19, #GZL_LIVE]
+	mov	x21, #0x0002
+	movk	x21, #0xdead, lsl #16
+	b	9b
+ENDPROC(__gz_lend_fault_run)
+
 	.ltorg
 
 	.popsection

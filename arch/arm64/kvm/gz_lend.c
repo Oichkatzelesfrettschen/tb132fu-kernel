@@ -45,12 +45,16 @@ EXPORT_SYMBOL_GPL(gz_lend_mode);
 extern char __gz_lend_shim[];
 int kvm_arm_gz_lend_late_init(void);
 
+/* __hyp_do_panic reads save_pa and fault_pa at these offsets. */
 struct gz_lend_cpu {
 	struct user_fpsimd_state fp;
-	unsigned long save_pa;
+	unsigned long save_pa;		/* 0x210 */
+	unsigned long fault_pa;		/* 0x218 */
+	bool dead;
 };
 
-static DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
+DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
+extern char __gz_lend_fault_run[];
 
 static unsigned long gz_lend_shim_pa;
 static u64 gz_lend_run_fn __read_mostly = ~0ULL;
@@ -89,14 +93,20 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 			raw_smp_processor_id(), a0, a1, a2, a3);
 	local_irq_save(flags);
 	c = this_cpu_ptr(&gz_lend_cpu);
+	if (unlikely(c->dead)) {
+		local_irq_restore(flags);
+		return a0 == gz_lend_run_fn ? ARM_EXCEPTION_HYP_GONE : 0;
+	}
 	arm_smccc_hvc(GZ_LEND_ID, gz_lend_shim_pa, a0, a1, a2, a3,
 		      c->save_pa | (a0 == gz_lend_run_fn),
 		      (unsigned long)&c->fp, &res);
-	if (unlikely(res.a0 == GZ_LEND_FAULT)) {
+	if (unlikely((res.a0 & ~3UL) == 0xdead0000UL)) {
+		/* KVM's EL2 context on this CPU is gone. */
+		c->dead = true;
 		local_irq_restore(flags);
 		pr_err("gz_lend: EL2 fault in call %llx(%llx, %llx, %llx): far=%lx esr=%lx elr=%lx\n",
 		       a0, a1, a2, a3, res.a1, res.a2, res.a3);
-		return 0;
+		return a0 == gz_lend_run_fn ? ARM_EXCEPTION_HYP_GONE : 0;
 	}
 	if (res.a1 == 1)
 		fpsimd_load_state(&c->fp);
@@ -121,7 +131,9 @@ int gz_lend_map_hyp(int cpu)
 
 	if (!gz_lend_mode)
 		return 0;
-	return create_hyp_mappings(&c->fp, &c->fp + 1, PAGE_HYP);
+	BUILD_BUG_ON(offsetof(struct gz_lend_cpu, save_pa) != 0x210);
+	BUILD_BUG_ON(offsetof(struct gz_lend_cpu, fault_pa) != 0x218);
+	return create_hyp_mappings(c, c + 1, PAGE_HYP);
 }
 
 /*
@@ -178,6 +190,7 @@ int gz_lend_prepare(void)
 			return -ENOMEM;
 		__flush_dcache_area(page_address(page), PAGE_SIZE);
 		per_cpu(gz_lend_cpu, cpu).save_pa = page_to_phys(page);
+		per_cpu(gz_lend_cpu, cpu).fault_pa = __pa_symbol(__gz_lend_fault_run);
 	}
 	on_each_cpu(gz_lend_quiesce_vtimer, NULL, 1);
 	gz_lend_shim_pa = __pa_symbol(__gz_lend_shim);

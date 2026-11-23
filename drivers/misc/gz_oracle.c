@@ -55,7 +55,8 @@ static void gz_vtimer_read(void *info)
 static int gz_oracle_show(struct seq_file *m, void *v)
 {
 	struct gz_vtimer_read t;
-	int tcpu;
+	struct gz_oracle_read r;
+	int tcpu, cpu, sel;
 
 	for_each_online_cpu(tcpu) {
 		if (smp_call_function_single(tcpu, gz_vtimer_read, &t, 1))
@@ -63,9 +64,6 @@ static int gz_oracle_show(struct seq_file *m, void *v)
 		seq_printf(m, "cpu%d cntv_ctl %llx cntv_cval %llx cntvct %llx cntp_ctl %llx\n",
 			   tcpu, t.cntv_ctl, t.cntv_cval, t.cntvct, t.cntp_ctl);
 	}
-
-	struct gz_oracle_read r;
-	int cpu, sel;
 
 	if (__boot_cpu_mode[0] != BOOT_CPU_MODE_EL1) {
 		seq_puts(m, "kernel entered at EL2: no hypervisor below it\n");
@@ -97,6 +95,19 @@ static int gz_oracle_show(struct seq_file *m, void *v)
 
 extern char gz_lend_probe[];
 extern bool gz_lend_trace;
+
+/*
+ * A caller-chosen entry address runs arbitrary memory at EL2, so that form
+ * of the write is accepted only when gz_lend_debug_entry=1 is on the kernel
+ * command line. The built-in probe entry stays available.
+ */
+static bool gz_lend_debug_entry __ro_after_init;
+
+static int __init gz_lend_debug_entry_setup(char *s)
+{
+	return kstrtobool(s, &gz_lend_debug_entry);
+}
+early_param("gz_lend_debug_entry", gz_lend_debug_entry_setup);
 
 static void gz_lend_stub_call(void *info)
 {
@@ -177,6 +188,8 @@ static ssize_t gz_lend_write(struct file *file, const char __user *ubuf,
 		return -EINVAL;
 	if (!strcmp(tok, "probe"))
 		r.pa = __pa_symbol(gz_lend_probe);
+	else if (!gz_lend_debug_entry)
+		return -EPERM;
 	else if (kstrtoul(tok, 16, &r.pa))
 		return -EINVAL;
 	if (cpu < 0 || cpu >= nr_cpu_ids || !cpu_online(cpu))

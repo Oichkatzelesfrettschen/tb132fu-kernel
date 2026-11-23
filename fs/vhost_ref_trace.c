@@ -8,6 +8,7 @@
  * last user shows which reference stayed.
  */
 
+#include <linux/fdtable.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/string.h>

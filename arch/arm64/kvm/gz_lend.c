@@ -28,6 +28,8 @@
 #include <asm/sysreg.h>
 #include <asm/barrier.h>
 #include <linux/smp.h>
+#include <linux/workqueue.h>
+#include <linux/jiffies.h>
 #include <linux/cpumask.h>
 #include <linux/sched.h>
 #include <linux/moduleparam.h>
@@ -53,13 +55,17 @@ static DEFINE_PER_CPU(struct gz_lend_cpu, gz_lend_cpu);
 static unsigned long gz_lend_shim_pa;
 static u64 gz_lend_run_fn __read_mostly = ~0ULL;
 static bool gz_lend_armed;
+static bool gz_lend_auto __initdata;
 bool gz_lend_trace;
 
 /* The boot CPU records EL1 entry in __boot_cpu_mode[0] before this runs. */
 static int __init gz_lend_setup(char *s)
 {
-	if (s && *s == '1' && __boot_cpu_mode[0] == BOOT_CPU_MODE_EL1)
+	if (s && (*s == '1' || *s == '2') &&
+	    __boot_cpu_mode[0] == BOOT_CPU_MODE_EL1) {
 		gz_lend_mode = true;
+		gz_lend_auto = *s == '1';
+	}
 	return 0;
 }
 early_param("gz_lend", gz_lend_setup);
@@ -197,3 +203,23 @@ int gz_lend_arm(void)
 	pr_info("gz_lend: armed, shim at %lx, kvm init %d\n", gz_lend_shim_pa, ret);
 	return ret;
 }
+
+/*
+ * gz_lend=1 arms the lend by itself 20 s after the initcalls, which is
+ * before Android marks the boot slot successful, so a failure here still
+ * counts against the slot's retry counter. gz_lend=2 leaves arming to a
+ * write of "arm" to /proc/gz_lend.
+ */
+static void gz_lend_auto_arm(struct work_struct *work)
+{
+	gz_lend_arm();
+}
+static DECLARE_DELAYED_WORK(gz_lend_auto_work, gz_lend_auto_arm);
+
+static int __init gz_lend_auto_init(void)
+{
+	if (gz_lend_mode && gz_lend_auto)
+		schedule_delayed_work(&gz_lend_auto_work, 20 * HZ);
+	return 0;
+}
+late_initcall(gz_lend_auto_init);

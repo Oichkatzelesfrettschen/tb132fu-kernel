@@ -1568,11 +1568,20 @@ static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx,
 
 	ion_handle = ion_import_dma_buf(kctx->kbdev->client, dma_buf);
 
-	/* ion_import_dma_buf() rejects every exporter except ION. */
-	if (IS_ERR(ion_handle))
-		ion_handle = NULL;
-
 	reg->gpu_alloc->imported.umm.ion_client = kctx->kbdev->client;
+	reg->gpu_alloc->imported.umm.ion_handle = NULL;
+
+	/*
+	 * ion_import_dma_buf() returns -EINVAL for every exporter except ION;
+	 * such a buffer maps without an ION handle. Any other error is a
+	 * failed import of an ION buffer.
+	 */
+	if (IS_ERR(ion_handle)) {
+		if (PTR_ERR(ion_handle) != -EINVAL)
+			goto error_out;
+		ion_handle = NULL;
+	}
+
 	reg->gpu_alloc->imported.umm.ion_handle = ion_handle;
 #endif
 
@@ -1587,6 +1596,7 @@ static struct kbase_va_region *kbase_mem_from_umm(struct kbase_context *kctx,
 			if (ion_handle)
 				ion_free(kctx->kbdev->client, ion_handle);
 			ion_handle = NULL;
+			reg->gpu_alloc->imported.umm.ion_handle = NULL;
 #endif
 			dev_warn(kctx->kbdev->dev,
 				 "Failed to map dma-buf %pK on GPU: %d\n",

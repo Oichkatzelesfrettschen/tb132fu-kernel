@@ -61,3 +61,4 @@ gz_main_mod-objs += gz_main.o \
 			     mtee-kree/tz_mmap.o mtee-kree/tz_system.o mtee-kree/kree_mem.o
 
 obj-$(CONFIG_MTK_ENABLE_GENIEZONE) += gz-trusty/
+obj-$(CONFIG_MTK_GZVM_PROBE) += gzvm_probe.o

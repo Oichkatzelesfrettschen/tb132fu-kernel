@@ -5726,7 +5726,7 @@ static void binder_deferred_release(struct binder_proc *proc)
 	BUG_ON(proc->files);
 
 	mutex_lock(&binder_procs_lock);
-	hlist_del(&proc->proc_node);
+	hlist_del_init(&proc->proc_node);
 	mutex_unlock(&binder_procs_lock);
 
 	mutex_lock(&context->context_mgr_node_lock);
@@ -5814,6 +5814,7 @@ static void binder_deferred_func(struct work_struct *work)
 	int defer;
 
 	do {
+		mutex_lock(&binder_procs_lock);
 		mutex_lock(&binder_deferred_lock);
 		if (!hlist_empty(&binder_deferred_list)) {
 			proc = hlist_entry(binder_deferred_list.first,
@@ -5821,11 +5822,20 @@ static void binder_deferred_func(struct work_struct *work)
 			hlist_del_init(&proc->deferred_work_node);
 			defer = proc->deferred_work;
 			proc->deferred_work = 0;
+			/*
+			 * binder_thread_group_exit() queues work for every proc
+			 * it finds on binder_procs. A proc whose release this
+			 * pass consumes leaves that list under the same locks,
+			 * so it is never queued again before it is freed.
+			 */
+			if (defer & BINDER_DEFERRED_RELEASE)
+				hlist_del_init(&proc->proc_node);
 		} else {
 			proc = NULL;
 			defer = 0;
 		}
 		mutex_unlock(&binder_deferred_lock);
+		mutex_unlock(&binder_procs_lock);
 
 		files = NULL;
 		if (defer & BINDER_DEFERRED_PUT_FILES) {

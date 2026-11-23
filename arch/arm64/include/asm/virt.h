@@ -81,6 +81,7 @@ void __hyp_reset_vectors(void);
  * Set when the kernel runs at EL1 under a hypervisor that lends EL2 through
  * the gz_lend call; KVM then uses its non-VHE hyp code through that call.
  */
+#ifdef CONFIG_KVM_ARM_HOST
 extern bool gz_lend_mode;
 int gz_lend_map_hyp(int cpu);
 int gz_lend_prepare(void);
@@ -89,6 +90,9 @@ bool gz_lend_vcpu_cpu_ok(void);
 void gz_lend_pin_vcpu_thread(void);
 u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3);
 bool gz_lend_fault_is_el3_upcall(unsigned long elr);
+#else
+#define gz_lend_mode	false
+#endif
 
 static inline bool is_hyp_mode_available(void)
 {

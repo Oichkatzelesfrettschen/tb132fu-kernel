@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/kvm_host.h>
 #include <linux/mm.h>
+#include <linux/mutex.h>
 #include <linux/percpu.h>
 #include <linux/atomic.h>
 #include <linux/string.h>
@@ -269,17 +270,22 @@ bool gz_lend_vcpu_cpu_ok(void)
 	return gz_lend_vcpu_cpus & BIT(raw_smp_processor_id());
 }
 
-/* Moves the calling vCPU thread onto the permitted CPUs; may sleep. */
-void gz_lend_pin_vcpu_thread(void)
+/*
+ * Moves the calling vCPU thread onto the permitted CPUs; may sleep. Returns
+ * -ENODEV when none of the permitted CPUs is online.
+ */
+int gz_lend_pin_vcpu_thread(void)
 {
 	cpumask_t mask;
 
 	cpumask_clear(&mask);
 	*cpumask_bits(&mask) = gz_lend_vcpu_cpus;
 	cpumask_and(&mask, &mask, cpu_online_mask);
-	if (cpumask_empty(&mask) || cpumask_subset(&current->cpus_allowed, &mask))
-		return;
-	set_cpus_allowed_ptr(current, &mask);
+	if (cpumask_empty(&mask))
+		return -ENODEV;
+	if (!cpumask_subset(&current->cpus_allowed, &mask))
+		set_cpus_allowed_ptr(current, &mask);
+	return 0;
 }
 
 /*
@@ -293,8 +299,11 @@ static void gz_lend_quiesce_vtimer(void *unused)
 	isb();
 }
 
+/* Serialises preparation and arming across the worker and /proc/gz_lend. */
+static DEFINE_MUTEX(gz_lend_lock);
+
 /* Allocates the per-CPU save pages and removes them from the data caches. */
-int gz_lend_prepare(void)
+static int __gz_lend_prepare(void)
 {
 	int cpu;
 
@@ -307,7 +316,7 @@ int gz_lend_prepare(void)
 		struct page *page = alloc_page(GFP_KERNEL | __GFP_ZERO);
 
 		if (!page)
-			return -ENOMEM;
+			goto unwind;
 		__flush_dcache_area(page_address(page), PAGE_SIZE);
 		per_cpu(gz_lend_cpu, cpu).save_pa = page_to_phys(page);
 		per_cpu(gz_lend_cpu, cpu).fault_pa = __pa_symbol(__gz_lend_fault_run);
@@ -317,23 +326,52 @@ int gz_lend_prepare(void)
 	gz_lend_run_fn = (u64)kvm_ksym_ref(__kvm_vcpu_run_nvhe);
 	gz_lend_armed = true;
 	return 0;
+
+unwind:
+	for_each_possible_cpu(cpu) {
+		struct gz_lend_cpu *c = &per_cpu(gz_lend_cpu, cpu);
+
+		if (c->save_pa)
+			__free_page(phys_to_page(c->save_pa));
+		c->save_pa = 0;
+	}
+	return -ENOMEM;
 }
 
-/* Starts the deferred KVM initialisation on lent EL2. */
-int gz_lend_arm(void)
+int gz_lend_prepare(void)
 {
-	static bool done;
 	int ret;
 
-	ret = gz_lend_prepare();
+	mutex_lock(&gz_lend_lock);
+	ret = __gz_lend_prepare();
+	mutex_unlock(&gz_lend_lock);
+	return ret;
+}
+
+/*
+ * Starts the deferred KVM initialisation on lent EL2. The initialisation
+ * runs once per boot: a failed attempt leaves hyp state installed on some
+ * CPUs, so a later call reports that failure instead of running it again.
+ */
+int gz_lend_arm(void)
+{
+	static int result = 1;
+	int ret;
+
+	mutex_lock(&gz_lend_lock);
+	ret = __gz_lend_prepare();
 	if (ret)
-		return ret;
-	if (done)
-		return -EBUSY;
-	done = true;
+		goto out;
+	if (result != 1) {
+		ret = result ? result : -EBUSY;
+		goto out;
+	}
 
 	ret = kvm_arm_gz_lend_late_init();
+	result = ret;
 	pr_info("gz_lend: armed, shim at %lx, kvm init %d\n", gz_lend_shim_pa, ret);
+out:
+	mutex_unlock(&gz_lend_lock);
 	return ret;
 }
 

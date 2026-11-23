@@ -729,8 +729,14 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *run)
 		 * involves poking the GIC, which must be done in a
 		 * non-preemptible context.
 		 */
-		if (gz_lend_mode)
-			gz_lend_pin_vcpu_thread();
+		if (gz_lend_mode) {
+			int err = gz_lend_pin_vcpu_thread();
+
+			if (err) {
+				ret = err;
+				break;
+			}
+		}
 
 		preempt_disable();
 

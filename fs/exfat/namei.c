@@ -1226,25 +1226,33 @@ static int exfat_rename_file(struct inode *inode, struct exfat_chain *p_dir,
 		return -EIO;
 
 	num_old_entries = exfat_count_ext_entries(sb, p_dir, oldentry, epold);
-	if (num_old_entries < 0)
+	if (num_old_entries < 0) {
+		brelse(old_bh);
 		return -EIO;
+	}
 	num_old_entries++;
 
 	num_new_entries = exfat_calc_num_entries(p_uniname);
-	if (num_new_entries < 0)
+	if (num_new_entries < 0) {
+		brelse(old_bh);
 		return num_new_entries;
+	}
 
 	if (num_old_entries < num_new_entries) {
 		int newentry;
 
 		newentry =
 			exfat_find_empty_entry(inode, p_dir, num_new_entries);
-		if (newentry < 0)
+		if (newentry < 0) {
+			brelse(old_bh);
 			return newentry; /* -EIO or -ENOSPC */
+		}
 
 		epnew = exfat_get_dentry(sb, p_dir, newentry, &new_bh);
-		if (!epnew)
+		if (!epnew) {
+			brelse(old_bh);
 			return -EIO;
+		}
 
 		*epnew = *epold;
 		if (exfat_get_entry_type(epnew) == TYPE_FILE) {
@@ -1311,21 +1319,29 @@ static int exfat_move_file(struct inode *inode, struct exfat_chain *p_olddir,
 
 	num_old_entries = exfat_count_ext_entries(sb, p_olddir, oldentry,
 		epmov);
-	if (num_old_entries < 0)
+	if (num_old_entries < 0) {
+		brelse(mov_bh);
 		return -EIO;
+	}
 	num_old_entries++;
 
 	num_new_entries = exfat_calc_num_entries(p_uniname);
-	if (num_new_entries < 0)
+	if (num_new_entries < 0) {
+		brelse(mov_bh);
 		return num_new_entries;
+	}
 
 	newentry = exfat_find_empty_entry(inode, p_newdir, num_new_entries);
-	if (newentry < 0)
+	if (newentry < 0) {
+		brelse(mov_bh);
 		return newentry; /* -EIO or -ENOSPC */
+	}
 
 	epnew = exfat_get_dentry(sb, p_newdir, newentry, &new_bh);
-	if (!epnew)
+	if (!epnew) {
+		brelse(mov_bh);
 		return -EIO;
+	}
 
 	*epnew = *epmov;
 	if (exfat_get_entry_type(epnew) == TYPE_FILE) {
@@ -1459,6 +1475,7 @@ static int __exfat_rename(struct inode *old_parent_inode,
 
 		num_entries = exfat_count_ext_entries(sb, p_dir, new_entry, ep);
 		if (num_entries < 0) {
+			brelse(new_bh);
 			ret = -EIO;
 			goto del_out;
 		}

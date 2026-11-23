@@ -519,11 +519,11 @@ static int parse_options(struct super_block *sb, char *options, int silent,
 				opts->allow_utime = option & (0022);
 				break;
 			case Opt_charset:
-				if (opts->iocharset != exfat_default_iocharset)
-					kfree(opts->iocharset);
 				tmpstr = match_strdup(&args[0]);
 				if (!tmpstr)
 					return -ENOMEM;
+				if (opts->iocharset != exfat_default_iocharset)
+					kfree(opts->iocharset);
 				opts->iocharset = tmpstr;
 				break;
 			case Opt_err_cont:
@@ -568,7 +568,7 @@ static int parse_options(struct super_block *sb, char *options, int silent,
 	}
 
 out:
-	if (opts->allow_utime == -1)
+	if (opts->allow_utime == (unsigned short)-1)
 		opts->allow_utime = ~opts->fs_dmask & (0022);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)

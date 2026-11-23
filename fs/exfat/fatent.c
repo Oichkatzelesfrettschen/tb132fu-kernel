@@ -224,6 +224,14 @@ static int __exfat_free_cluster(struct inode *inode, struct exfat_chain *p_chain
 
 			if (err)
 				goto dec_used_clus;
+
+			/* A chain longer than the volume revisits a cluster. */
+			if (num_clusters >= EXFAT_DATA_CLUSTER_COUNT(sbi)) {
+				exfat_fs_error(sb, "cluster chain loop (start %u)",
+					       p_chain->dir);
+				exfat_count_used_clusters(sb, &sbi->used_clusters);
+				return -EIO;
+			}
 		} while (clu != EXFAT_EOF_CLUSTER);
 	}
 
@@ -257,6 +265,12 @@ int exfat_find_last_cluster(struct super_block *sb, struct exfat_chain *p_chain,
 
 	do {
 		count++;
+		if (count > p_chain->size) {
+			exfat_fs_error(sb,
+				"bogus directory size (clus : ondisk(%d) < counted(%d))",
+				p_chain->size, count);
+			return -EIO;
+		}
 		clu = next;
 		if (exfat_ent_get(sb, clu, &next))
 			return -EIO;

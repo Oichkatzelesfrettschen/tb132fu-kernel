@@ -95,6 +95,18 @@ config MTK_GZ_SUPPORT_SDSP
 	  smc call into mtee for setup security
 	  realted register.
 
+config MTK_GZVM_PROBE
+	bool "GenieZone gzvm host-interface probe"
+	depends on ARM64 && MTK_ENABLE_GENIEZONE
+	help
+	  Issues the SMCCC vendor-hypervisor UID query, an unassigned
+	  owner-59 control call and the gzvm GZVM_FUNC_PROBE hypercall
+	  once at boot and records the results in the kernel log and in
+	  misc device names listed under /sys/class/misc. An
+	  undefined-instruction hook keeps a refused HVC from oopsing
+	  the kernel.
+	  If unsure, say N.
+
 source "drivers/misc/mediatek/geniezone/gz-trusty/Kconfig"
 
 endmenu

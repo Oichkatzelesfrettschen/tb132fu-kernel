@@ -3,6 +3,7 @@
 #define _LINUX_FS_H
 
 #include <linux/linkage.h>
+#include <linux/vhost_ref_trace.h>
 #include <linux/wait_bit.h>
 #include <linux/kdev_t.h>
 #include <linux/dcache.h>
@@ -967,6 +968,7 @@ struct file_handle {
 static inline struct file *get_file(struct file *f)
 {
 	atomic_long_inc(&f->f_count);
+	vhost_ref_trace_ref(f, "get_file", __builtin_return_address(0));
 	return f;
 }
 #define get_file_rcu_many(x, cnt)	\

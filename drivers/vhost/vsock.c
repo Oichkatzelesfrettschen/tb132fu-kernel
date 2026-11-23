@@ -18,6 +18,8 @@
 #include <linux/hashtable.h>
 
 #include <net/af_vsock.h>
+#include <linux/vhost_ref_trace.h>
+
 #include "vhost.h"
 
 #define VHOST_VSOCK_DEFAULT_HOST_CID	2
@@ -633,6 +635,7 @@ static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
 		       VHOST_VSOCK_WEIGHT);
 
 	file->private_data = vsock;
+	vhost_ref_trace_vsock_open(file);
 	spin_lock_init(&vsock->send_pkt_list_lock);
 	INIT_LIST_HEAD(&vsock->send_pkt_list);
 	vhost_work_init(&vsock->send_pkt_work, vhost_transport_send_pkt_work);
@@ -683,6 +686,8 @@ static int vhost_vsock_dev_release(struct inode *inode, struct file *file)
 {
 	struct vhost_vsock *vsock = file->private_data;
 
+	vhost_ref_trace_vsock_release(file, vsock->guest_cid);
+
 	spin_lock_bh(&vhost_vsock_lock);
 	if (vsock->guest_cid)
 		hash_del_rcu(&vsock->hash);
@@ -700,6 +705,7 @@ static int vhost_vsock_dev_release(struct inode *inode, struct file *file)
 	 * vhost_vsock_stop() can not fail in this case, so we don't need to
 	 * check the return code.
 	 */
+	vhost_ref_trace_vsock_release_rcu(file);
 	vhost_vsock_stop(vsock, false);
 	vhost_vsock_flush(vsock);
 	vhost_dev_stop(&vsock->dev);

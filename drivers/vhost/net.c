@@ -34,6 +34,8 @@
 #include <net/sock.h>
 #include <net/xdp.h>
 
+#include <linux/vhost_ref_trace.h>
+
 #include "vhost.h"
 
 static int experimental_zcopytx = 0;
@@ -1170,10 +1172,12 @@ static int vhost_net_release(struct inode *inode, struct file *f)
 	struct socket *tx_sock;
 	struct socket *rx_sock;
 
+	vhost_ref_trace_net_release(f);
 	vhost_net_stop(n, &tx_sock, &rx_sock);
 	vhost_net_flush(n);
 	vhost_dev_stop(&n->dev);
 	vhost_dev_cleanup(&n->dev);
+	vhost_ref_trace_net_release_done(f);
 	vhost_net_vq_reset(n);
 	if (tx_sock)
 		sockfd_put(tx_sock);

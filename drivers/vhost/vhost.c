@@ -33,6 +33,8 @@
 #include <linux/nospec.h>
 #include <linux/kcov.h>
 
+#include <linux/vhost_ref_trace.h>
+
 #include "vhost.h"
 
 static ushort max_mem_regions = 64;
@@ -533,6 +535,7 @@ long vhost_dev_set_owner(struct vhost_dev *dev)
 	}
 
 	dev->worker = worker;
+	vhost_ref_trace_set_owner(dev, worker->pid, dev->mm);
 	wake_up_process(worker);	/* avoid contributing to loadavg */
 
 	err = vhost_attach_cgroups(dev);

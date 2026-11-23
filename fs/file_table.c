@@ -29,6 +29,8 @@
 
 #include <linux/atomic.h>
 
+#include <linux/vhost_ref_trace.h>
+
 #include "internal.h"
 
 /* sysctl tunables... */
@@ -349,6 +351,7 @@ void fput_many(struct file *file, unsigned int refs)
 
 void fput(struct file *file)
 {
+	vhost_ref_trace_ref(file, "fput", __builtin_return_address(0));
 	fput_many(file, 1);
 }
 

@@ -20,6 +20,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/close_range.h>
+#include <linux/vhost_ref_trace.h>
 
 unsigned int sysctl_nr_open __read_mostly = 1024*1024;
 unsigned int sysctl_nr_open_min = BITS_PER_LONG;
@@ -905,6 +906,7 @@ static struct file *__fget(unsigned int fd, fmode_t mask, unsigned int refs)
 	rcu_read_lock();
 	file = __fget_files_rcu(files, fd, mask, refs);
 	rcu_read_unlock();
+	vhost_ref_trace_ref(file, "fget", __builtin_return_address(0));
 
 	return file;
 }

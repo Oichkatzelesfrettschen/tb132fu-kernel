@@ -33,6 +33,23 @@ config VHOST_VSOCK
 	To compile this driver as a module, choose M here: the module will be called
 	vhost_vsock.
 
+config VHOST_FILE_REF_TRACE
+	bool "Trace references on the vhost-vsock device file"
+	depends on VHOST_VSOCK
+	default n
+	---help---
+	  Logs each reference taken and dropped on the open vhost-vsock
+	  device file (get_file, fget and fput, with the caller and the
+	  resulting f_count), the vhost-net and vhost-vsock release steps,
+	  and the vhost owner assignment. The do_exit hook reports only
+	  tasks whose name starts with "crosvm", before and after the task
+	  closes its files.
+
+	  The hooks sit in the generic file reference paths, so the option
+	  adds a pointer comparison to get_file(), fget and fput().
+
+	  If unsure, say N.
+
 config VHOST
 	tristate
 	---help---

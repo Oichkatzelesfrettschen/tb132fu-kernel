@@ -68,6 +68,7 @@
 #include <asm/unistd.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
+#include <linux/vhost_ref_trace.h>
 
 /*
  * The default value should be high enough to not crash a system that randomly
@@ -925,7 +926,9 @@ void __noreturn do_exit(long code)
 	exit_shm(tsk);
 	if (group_dead)
 		binder_thread_group_exit(tsk);
+	vhost_ref_trace_exit(tsk, group_dead, false);
 	exit_files(tsk);
+	vhost_ref_trace_exit(tsk, group_dead, true);
 	exit_fs(tsk);
 	if (group_dead)
 		disassociate_ctty(1);

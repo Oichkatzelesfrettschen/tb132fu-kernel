@@ -59,6 +59,33 @@ extern char __gz_lend_fault_run[];
 static unsigned long gz_lend_shim_pa;
 static u64 gz_lend_run_fn __read_mostly = ~0ULL;
 static bool gz_lend_armed;
+
+/*
+ * An EL3 upcall that faults on a lent CPU never issues its return call, so
+ * the secure world's caller stays suspended inside EL3. The default response
+ * is a restart; 0 keeps the system up with that CPU's KVM context dead.
+ */
+static bool gz_lend_upcall_panic = true;
+core_param(gz_lend_upcall_panic, gz_lend_upcall_panic, bool, 0644);
+
+/*
+ * gz_lend_el3_entry= names the EL2 address at which EL3 enters the lender
+ * when the secure world issues one of its SiP calls into it. The entry
+ * assumes the lender's own EL2 translation tables. 0 (the default) turns the
+ * classification off.
+ */
+static unsigned long gz_lend_el3_entry __ro_after_init;
+
+static int __init gz_lend_el3_entry_setup(char *s)
+{
+	return kstrtoul(s, 16, &gz_lend_el3_entry);
+}
+early_param("gz_lend_el3_entry", gz_lend_el3_entry_setup);
+
+bool gz_lend_fault_is_el3_upcall(unsigned long elr)
+{
+	return gz_lend_el3_entry && elr == gz_lend_el3_entry;
+}
 static bool gz_lend_auto __initdata;
 bool gz_lend_trace;
 
@@ -106,6 +133,12 @@ u64 gz_lend_hyp_call(u64 a0, u64 a1, u64 a2, u64 a3)
 		local_irq_restore(flags);
 		pr_err("gz_lend: EL2 fault in call %llx(%llx, %llx, %llx): far=%lx esr=%lx elr=%lx\n",
 		       a0, a1, a2, a3, res.a1, res.a2, res.a3);
+		if (gz_lend_fault_is_el3_upcall(res.a3)) {
+			pr_emerg("gz_lend: cpu%d took a secure-world upcall into the lender while EL2 was lent\n",
+				 raw_smp_processor_id());
+			if (gz_lend_upcall_panic)
+				panic("gz_lend: unanswered EL3 upcall");
+		}
 		return a0 == gz_lend_run_fn ? ARM_EXCEPTION_HYP_GONE : 0;
 	}
 	if (res.a1 == 1)

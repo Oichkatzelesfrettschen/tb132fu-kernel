@@ -90,7 +90,8 @@ static int gz_oracle_show(struct seq_file *m, void *v)
  * the entry at EL2 with the MMU off inside a patched GenieZone and returns
  * x0..x3. The call is made only on a write to /proc/gz_lend, in IPI context
  * with interrupts masked, because a faulting callee stops that CPU at EL2.
- * Input: "<cpu> <hex pa | probe> [a b c d]".
+ * Input: "<cpu> <hex pa | probe> [a b c d]"; "classify <hex elr>" prints how
+ * the fault report treats that EL2 return address.
  */
 #define GZ_LEND_ID	0xEF000E13UL
 
@@ -155,6 +156,15 @@ static ssize_t gz_lend_write(struct file *file, const char __user *ubuf,
 		pr_info("gz_lend: stub reset call on cpu%d\n", scpu);
 		smp_call_function_single(scpu, gz_lend_stub_call, &rv, 1);
 		pr_info("gz_lend: stub reset call on cpu%d returned %llx\n", scpu, rv);
+		return len;
+	}
+	if (!strncmp(buf, "classify ", 9)) {
+		unsigned long elr;
+
+		if (kstrtoul(strim(buf + 9), 16, &elr))
+			return -EINVAL;
+		pr_info("gz_lend: elr %lx classifies as %s\n", elr,
+			gz_lend_fault_is_el3_upcall(elr) ? "el3-upcall" : "other");
 		return len;
 	}
 	if (!strncmp(buf, "arm", 3)) {

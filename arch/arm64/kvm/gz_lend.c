@@ -86,6 +86,88 @@ bool gz_lend_fault_is_el3_upcall(unsigned long elr)
 {
 	return gz_lend_el3_entry && elr == gz_lend_el3_entry;
 }
+
+/*
+ * gz_lend_el3_decline=<ret>,<fn>,<fn_reply>,<reply> (hexadecimal) places one
+ * page of code at gz_lend_el3_entry in KVM's EL2 address space. EL3 enters
+ * it with the caller's function ID in x0. The code issues the SMC <ret> with
+ * x1 = <fn_reply> when the low 16 bits of x0 equal <fn>, x1 = <reply>
+ * otherwise, and x2-x4 = 0. It uses registers only: EL3 hands over a stack
+ * that KVM's tables leave unmapped. The MMU-off windows of the lend keep
+ * the fault report above.
+ */
+static u64 gz_lend_decline_lit[4];
+static bool gz_lend_decline_set __ro_after_init;
+
+static int __init gz_lend_el3_decline_setup(char *s)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(gz_lend_decline_lit); i++) {
+		char *tok = strsep(&s, ",");
+
+		if (!tok || kstrtou64(tok, 16, &gz_lend_decline_lit[i]))
+			return -EINVAL;
+	}
+	gz_lend_decline_set = !s;
+	return gz_lend_decline_set ? 0 : -EINVAL;
+}
+early_param("gz_lend_el3_decline", gz_lend_el3_decline_setup);
+
+extern const char __gz_lend_decline[], __gz_lend_decline_lit[];
+
+asm(
+"	.pushsection .rodata, \"a\"\n"
+"	.balign	8\n"
+"	.globl	__gz_lend_decline\n"
+"__gz_lend_decline:\n"
+"	and	w9, w0, #0xffff\n"
+"	ldr	x0, 1f\n"
+"	ldr	x10, 1f + 8\n"
+"	ldr	x11, 1f + 16\n"
+"	ldr	x1, 1f + 24\n"
+"	cmp	x9, x10\n"
+"	csel	x1, x11, x1, eq\n"
+"	mov	x2, xzr\n"
+"	mov	x3, xzr\n"
+"	mov	x4, xzr\n"
+"	smc	#0\n"
+"0:	wfe\n"
+"	b	0b\n"
+"	.balign	8\n"
+"	.globl	__gz_lend_decline_lit\n"
+"__gz_lend_decline_lit:\n"
+"1:	.quad	0, 0, 0, 0\n"
+"	.popsection\n"
+);
+
+static int gz_lend_map_decline(void)
+{
+	size_t code = __gz_lend_decline_lit - __gz_lend_decline;
+	unsigned long page;
+	u64 pte;
+	int ret;
+
+	if (!gz_lend_decline_set || !gz_lend_el3_entry)
+		return 0;
+	page = get_zeroed_page(GFP_KERNEL);
+	if (!page)
+		return -ENOMEM;
+	memcpy((void *)page, __gz_lend_decline, code);
+	memcpy((void *)page + code, gz_lend_decline_lit,
+	       sizeof(gz_lend_decline_lit));
+	flush_icache_range(page, page + PAGE_SIZE);
+	ret = create_hyp_fixed_exec_mapping(gz_lend_el3_entry,
+					    __pa(page), &pte);
+	if (ret) {
+		free_page(page);
+		pr_err("gz_lend: EL3 decline page not mapped: %d\n", ret);
+		return ret;
+	}
+	pr_info("gz_lend: EL3 decline page mapped, entry %llx\n", pte);
+	return 0;
+}
+
 static bool gz_lend_auto __initdata;
 bool gz_lend_trace;
 
@@ -166,6 +248,12 @@ int gz_lend_map_hyp(int cpu)
 		return 0;
 	BUILD_BUG_ON(offsetof(struct gz_lend_cpu, save_pa) != 0x210);
 	BUILD_BUG_ON(offsetof(struct gz_lend_cpu, fault_pa) != 0x218);
+	if (cpu == cpumask_first(cpu_possible_mask)) {
+		int ret = gz_lend_map_decline();
+
+		if (ret)
+			return ret;
+	}
 	return create_hyp_mappings(c, c + 1, PAGE_HYP);
 }
 

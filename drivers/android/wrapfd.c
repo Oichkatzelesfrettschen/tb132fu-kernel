@@ -278,6 +278,7 @@ static void async_io_complete(struct kiocb *kiocb, long ret, long ret2)
 	struct wrap_io_req *req = container_of(kiocb, struct wrap_io_req, kiocb);
 	struct wrap_io_ctx *io_ctx = req->io_ctx;
 	unsigned long flags;
+	bool done;
 
 	spin_lock_irqsave(&io_ctx->lock, flags);
 	if (ret < 0) {
@@ -287,11 +288,12 @@ static void async_io_complete(struct kiocb *kiocb, long ret, long ret2)
 		io_ctx->bytes_read += ret;
 	}
 
-	io_ctx->nr_reqs--;
-
-	if (!io_ctx->nr_reqs)
-		complete(&io_ctx->io_done);
+	done = !--io_ctx->nr_reqs;
 	spin_unlock_irqrestore(&io_ctx->lock, flags);
+
+	/* io_ctx lives on the waiter's stack, which the waiter reuses once woken. */
+	if (done)
+		complete(&io_ctx->io_done);
 }
 
 /*
@@ -755,6 +757,10 @@ static int dmabuf_content_load(struct wrap_content *content, struct file *file,
 
 	dmabuf_content = container_of(content, struct wrap_content_dmabuf,
 				      content);
+	/* The read planner sizes its bounce pages from a length of at least one byte. */
+	if (!len)
+		return buf_offs >= 0 && buf_offs <= dmabuf_content->dmabuf->size ? 0 : -EINVAL;
+
 	ret = dmabuf_content_load_prepare(file, dmabuf_content->dmabuf, file_offs, buf_offs, len,
 					  &param);
 	if (ret < 0)
@@ -1706,6 +1712,7 @@ static int wrap_file_rewrap(struct wrap_ctx *ctx,
 	struct wrap_content *new_content;
 	struct wrap_content *content;
 	struct wrap_ctx *new_ctx;
+	bool was_writable;
 	int ret = 0;
 
 	if (copy_from_user(&wrapfd_rewrap, user_wrapfd_rewrap,
@@ -1729,6 +1736,7 @@ static int wrap_file_rewrap(struct wrap_ctx *ctx,
 	if (ret)
 		goto out;
 
+	was_writable = content->ops->is_writable(content);
 	new_content = content->ops->make_writable(content,
 				(wrapfd_rewrap.prot & PROT_WRITE) != 0);
 	if (IS_ERR(new_content)) {
@@ -1761,6 +1769,9 @@ free_new_ctx:
 free_new_content:
 	if (new_content != content)
 		new_content->ops->free(new_content);
+	else
+		/* make_writable() changed the content in place. */
+		WARN_ON(IS_ERR(content->ops->make_writable(content, was_writable)));
 restore_content:
 	/*
 	 * Restore original wrap. We are the owner and the wrap

@@ -8,6 +8,14 @@
 #ifndef _LINUX_WRAPFD_H
 #define _LINUX_WRAPFD_H
 
+#include <linux/errno.h>
+#include <linux/types.h>
+
+struct device;
+struct dma_buf;
+struct file;
+struct vm_area_struct;
+
 union wrapfd_mappable {
 	struct dma_buf *dmabuf;
 };

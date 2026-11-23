@@ -7,6 +7,7 @@
  */
 
 #include <linux/mman.h>
+#include <linux/wrapfd.h>
 #include <linux/pagemap.h>
 #include <linux/syscalls.h>
 #include <linux/mempolicy.h>
@@ -75,7 +76,8 @@ static long madvise_behavior(struct vm_area_struct *vma,
 		new_flags |= VM_DONTCOPY;
 		break;
 	case MADV_DOFORK:
-		if (vma->vm_flags & VM_IO) {
+		/* A wrapfd mapping stays out of forked children. */
+		if ((vma->vm_flags & VM_IO) || is_wrapfd_vma(vma)) {
 			error = -EINVAL;
 			goto out;
 		}

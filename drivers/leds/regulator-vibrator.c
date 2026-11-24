@@ -14,7 +14,11 @@
 #include <linux/module.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#if IS_ENABLED(CONFIG_REGULATOR_MT6359P)
+#include <linux/mfd/mt6359p/registers.h>
+#endif
 #include <linux/spinlock.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
@@ -26,7 +30,10 @@
 #define pr_fmt(fmt) KBUILD_MODNAME " %s(%d) :" fmt, __func__, __LINE__
 
 #define DEFAULT_MIN_LIMIT 15
-#define VIBR_MAX_LEVELS 16
+#define VIBR_MAX_LEVELS 48
+/* RG_VIBR_VOCAL raises the VIBR output in 10 mV steps, codes 0 to 10. */
+#define VIBR_TRIM_STEP_UV 10000
+#define VIBR_TRIM_MAX 10
 /* Duty-cycle period; an ERM rotor time constant of tens of ms smooths it. */
 #define VIBR_PWM_PERIOD_MS 20
 #define VIBR_DUTY_MAX 100
@@ -36,9 +43,16 @@ struct reg_vibr_config {
 	unsigned int max_limit;
 	unsigned int min_volt;
 	unsigned int max_volt;
-	/* Supply steps inside [min_volt, max_volt], ascending, in microvolts. */
+	/* Output levels inside [min_volt, max_volt], ascending, in microvolts:
+	 * each is a regulator voltage (base_uv) plus trim * VIBR_TRIM_STEP_UV.
+	 */
 	unsigned int levels[VIBR_MAX_LEVELS];
+	unsigned int base_uv[VIBR_MAX_LEVELS];
+	u8 trim[VIBR_MAX_LEVELS];
 	unsigned int nlevels;
+	/* PMIC register map for RG_VIBR_VOCAL; NULL disables trim levels. */
+	struct regmap *trim_map;
+	unsigned int applied_trim;
 	struct regulator *reg;
 };
 
@@ -126,14 +140,94 @@ static int mt_vibra_parse_dt(struct device *dev,
 
 }
 
+static void vibr_insert_level(struct reg_vibr_config *conf,
+		unsigned int base, unsigned int trim)
+{
+	unsigned int uv = base + trim * VIBR_TRIM_STEP_UV;
+	unsigned int j;
+
+	if (uv < conf->min_volt || uv > conf->max_volt ||
+	    conf->nlevels >= VIBR_MAX_LEVELS)
+		return;
+	for (j = 0; j < conf->nlevels; j++)
+		if (conf->levels[j] == uv)
+			return;
+	j = conf->nlevels++;
+	while (j > 0 && conf->levels[j - 1] > uv) {
+		conf->levels[j] = conf->levels[j - 1];
+		conf->base_uv[j] = conf->base_uv[j - 1];
+		conf->trim[j] = conf->trim[j - 1];
+		j--;
+	}
+	conf->levels[j] = uv;
+	conf->base_uv[j] = base;
+	conf->trim[j] = trim;
+}
+
+/*
+ * The trim field shares VIBR_ANA_CON0 with the voltage select field. Trim
+ * levels open only when the select code read back through the regulator's
+ * register map names the voltage the regulator reports, so a different
+ * register layout leaves the plain regulator steps in place, and only when
+ * the trim reads zero, so a factory calibration stays untouched.
+ */
+static struct regmap *vibr_trim_probe(struct reg_vibr_config *conf)
+{
+#if IS_ENABLED(CONFIG_REGULATOR_MT6359P)
+	struct regmap *map;
+	unsigned int val, vosel, vocal;
+	int cur;
+
+	map = regulator_get_regmap(conf->reg);
+	if (IS_ERR_OR_NULL(map))
+		return NULL;
+	if (regmap_read(map, PMIC_RG_VIBR_VOSEL_ADDR, &val))
+		return NULL;
+	vosel = (val >> PMIC_RG_VIBR_VOSEL_SHIFT) & PMIC_RG_VIBR_VOSEL_MASK;
+	cur = regulator_get_voltage(conf->reg);
+	if (cur <= 0 || regulator_list_voltage(conf->reg, vosel) != cur) {
+		pr_notice("trim disabled: vosel %u does not select %d uV\n",
+			  vosel, cur);
+		return NULL;
+	}
+	if (regmap_read(map, PMIC_RG_VIBR_VOCAL_ADDR, &val))
+		return NULL;
+	vocal = (val >> PMIC_RG_VIBR_VOCAL_SHIFT) & PMIC_RG_VIBR_VOCAL_MASK;
+	if (vocal) {
+		pr_notice("trim disabled: calibration code %u in use\n", vocal);
+		return NULL;
+	}
+	return map;
+#else
+	return NULL;
+#endif
+}
+
+static int vibr_write_trim(struct reg_vibr_config *conf, unsigned int trim)
+{
+#if IS_ENABLED(CONFIG_REGULATOR_MT6359P)
+	if (conf->trim_map == NULL || trim == conf->applied_trim)
+		return 0;
+	if (regmap_update_bits(conf->trim_map, PMIC_RG_VIBR_VOCAL_ADDR,
+			       PMIC_RG_VIBR_VOCAL_MASK <<
+			       PMIC_RG_VIBR_VOCAL_SHIFT,
+			       trim << PMIC_RG_VIBR_VOCAL_SHIFT))
+		return -EIO;
+	conf->applied_trim = trim;
+#endif
+	return 0;
+}
+
 static void vibr_collect_levels(struct reg_vibr_config *conf)
 {
 	int count, i, uv;
-	unsigned int j, u;
+	unsigned int t, u;
 
 	conf->nlevels = 0;
+	conf->applied_trim = 0;
 	if (conf->reg == NULL)
 		return;
+	conf->trim_map = vibr_trim_probe(conf);
 
 	count = regulator_count_voltages(conf->reg);
 	for (i = 0; i < count && conf->nlevels < VIBR_MAX_LEVELS; i++) {
@@ -144,14 +238,18 @@ static void vibr_collect_levels(struct reg_vibr_config *conf)
 		u = uv;
 		if (u < conf->min_volt || u > conf->max_volt)
 			continue;
-		j = conf->nlevels++;
-		while (j > 0 && conf->levels[j - 1] > u) {
-			conf->levels[j] = conf->levels[j - 1];
-			j--;
-		}
-		conf->levels[j] = u;
+		vibr_insert_level(conf, u, 0);
 	}
-	pr_info("supply levels in range: %u\n", conf->nlevels);
+	/* Trimmed levels after every plain step, so a plain step wins a tie. */
+	for (i = 0; conf->trim_map && i < count; i++) {
+		uv = regulator_list_voltage(conf->reg, i);
+		if (uv <= 0)
+			continue;
+		for (t = 1; t <= VIBR_TRIM_MAX; t++)
+			vibr_insert_level(conf, uv, t);
+	}
+	pr_info("output levels in range: %u, trim %s\n", conf->nlevels,
+		conf->trim_map ? "on" : "off");
 }
 
 static int vibr_apply_level(struct reg_vibr *vibr)
@@ -159,21 +257,25 @@ static int vibr_apply_level(struct reg_vibr *vibr)
 	unsigned int level = READ_ONCE(vibr->level);
 	unsigned int uv;
 	int ret;
+	struct reg_vibr_config *conf = &vibr->vibr_conf;
 
 	if (vibr->vibr_conf.reg == NULL || !vibr->vibr_conf.nlevels)
 		return 0;
 	if (level >= vibr->vibr_conf.nlevels)
 		level = vibr->vibr_conf.nlevels - 1;
-	uv = vibr->vibr_conf.levels[level];
-	if (uv == vibr->applied_uv)
-		return 0;
-	ret = regulator_set_voltage(vibr->vibr_conf.reg, uv, uv);
-	if (ret < 0) {
-		pr_notice("set voltage %u fail, ret = %d\n", uv, ret);
-		return ret;
+	uv = conf->base_uv[level];
+	if (uv != vibr->applied_uv) {
+		ret = regulator_set_voltage(conf->reg, uv, uv);
+		if (ret < 0) {
+			pr_notice("set voltage %u fail, ret = %d\n", uv, ret);
+			return ret;
+		}
+		vibr->applied_uv = uv;
 	}
-	vibr->applied_uv = uv;
-	return 0;
+	ret = vibr_write_trim(conf, conf->trim[level]);
+	if (ret < 0)
+		pr_notice("set trim %u fail, ret = %d\n", conf->trim[level], ret);
+	return ret;
 }
 
 static int vibr_power_set(struct reg_vibr *vibr)
@@ -609,6 +711,7 @@ static int vib_remove(struct platform_device *pdev)
 	hrtimer_cancel(&vibr->pwm_timer);
 	hrtimer_cancel(&vibr->vibr_timer);
 	cancel_work_sync(&vibr->vibr_work);
+	vibr_write_trim(&vibr->vibr_conf, 0);
 	devm_led_classdev_unregister(&pdev->dev, &led_vibr);
 
 	return 0;
@@ -631,6 +734,7 @@ static void vib_shutdown(struct platform_device *pdev)
 	} else {
 		spin_unlock_irqrestore(&vibr->vibr_lock, flags);
 	}
+	vibr_write_trim(&vibr->vibr_conf, 0);
 }
 
 static struct platform_driver vibrator_driver = {

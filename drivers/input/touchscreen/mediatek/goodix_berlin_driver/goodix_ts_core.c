@@ -35,8 +35,8 @@
 
 #define DRIVER_NAME "goodix_penraw_driver"
 #define DEVICE_NAME "goodix_penraw"
-static const unsigned int MINOR_NUMBER_START ; /* the minor number starts at */
-static const unsigned int NUMBER_MINOR_NUMBER ; /* the number of minor numbers */
+static const unsigned int MINOR_NUMBER_START; /* first minor number */
+static const unsigned int NUMBER_MINOR_NUMBER = 1; /* one device node */
 static unsigned int major_number; /* the major number of the device */
 /* ioctl for direct access */
 static struct cdev penraw_char_dev; /* character device */
@@ -2765,11 +2765,76 @@ static struct platform_driver goodix_ts_driver = {
 	.id_table = ts_core_ids,
 };
 
+/*
+ * The pen raw character device exposes the pen report ring through
+ * PENRAW_GET_VALUES. Its registration failure leaves the touch driver
+ * running, so goodix_ts_core_init reports it and returns success.
+ */
+static bool penraw_registered;
+
+static int __init goodix_penraw_register(void)
+{
+	struct device *node;
+	dev_t dev;
+	int ret;
+
+	ret = alloc_chrdev_region(&dev, MINOR_NUMBER_START, NUMBER_MINOR_NUMBER,
+				  DRIVER_NAME);
+	if (ret) {
+		ts_err("alloc_chrdev_region failed: %d", ret);
+		return ret;
+	}
+	major_number = MAJOR(dev);
+
+	cdev_init(&penraw_char_dev, &penraw_fops);
+	penraw_char_dev.owner = THIS_MODULE;
+	ret = cdev_add(&penraw_char_dev, dev, NUMBER_MINOR_NUMBER);
+	if (ret) {
+		ts_err("cdev_add failed: %d", ret);
+		goto err_region;
+	}
+
+	penraw_char_dev_class = class_create(THIS_MODULE, DEVICE_NAME);
+	if (IS_ERR(penraw_char_dev_class)) {
+		ret = PTR_ERR(penraw_char_dev_class);
+		ts_err("class_create failed: %d", ret);
+		goto err_cdev;
+	}
+
+	node = device_create(penraw_char_dev_class, NULL, dev, NULL, DEVICE_NAME);
+	if (IS_ERR(node)) {
+		ret = PTR_ERR(node);
+		ts_err("device_create failed: %d", ret);
+		goto err_class;
+	}
+
+	penraw_registered = true;
+	return 0;
+
+err_class:
+	class_destroy(penraw_char_dev_class);
+err_cdev:
+	cdev_del(&penraw_char_dev);
+err_region:
+	unregister_chrdev_region(dev, NUMBER_MINOR_NUMBER);
+	return ret;
+}
+
+static void goodix_penraw_unregister(void)
+{
+	dev_t dev = MKDEV(major_number, MINOR_NUMBER_START);
+
+	if (!penraw_registered)
+		return;
+	device_destroy(penraw_char_dev_class, dev);
+	class_destroy(penraw_char_dev_class);
+	cdev_del(&penraw_char_dev);
+	unregister_chrdev_region(dev, NUMBER_MINOR_NUMBER);
+	penraw_registered = false;
+}
+
 static int __init goodix_ts_core_init(void)
 {
-	int alloc_ret;
-	dev_t dev;
-	int cdev_ret;
 	int ret;
 
 	ts_info("Core layer init:%s", GOODIX_DRIVER_VERSION);
@@ -2785,70 +2850,28 @@ static int __init goodix_ts_core_init(void)
 	pen_report_num = 0;
 	pen_frame_no = 0;
 	pen_buffer_wp = 0;
-	return platform_driver_register(&goodix_ts_driver);
-	if(ret){
+	ret = platform_driver_register(&goodix_ts_driver);
+	if (ret) {
 		ts_err("failed register driver");
 		return ret;
 	}
 
-	/* get not assigned major numbers */
-	alloc_ret = alloc_chrdev_region(&dev, MINOR_NUMBER_START, NUMBER_MINOR_NUMBER, DRIVER_NAME);
-	if (alloc_ret != 0) {
-		ts_err("failed to alloc_chrdev_region()\n");
-		return -EINVAL;
-	}
-
-	/* get one number from the not-assigend numbers */
-	major_number = MAJOR(dev);
-
-	/* initialize cdev and function table */
-	cdev_init(&penraw_char_dev, &penraw_fops);
-	penraw_char_dev.owner = THIS_MODULE;
-
-	/* register the driver */
-	cdev_ret = cdev_add(&penraw_char_dev, dev, NUMBER_MINOR_NUMBER);
-	if (cdev_ret != 0) {
-		ts_err("failed to cdev_add()\n");
-		unregister_chrdev_region(dev, NUMBER_MINOR_NUMBER);
-		return -EINVAL;
-	}
-
-	/* register a class */
-	penraw_char_dev_class = class_create(THIS_MODULE, DEVICE_NAME);
-	if (IS_ERR(penraw_char_dev_class)) {
-		ts_err("class_create()\n");
-		cdev_del(&penraw_char_dev);
-		unregister_chrdev_region(dev, NUMBER_MINOR_NUMBER);
-		return -EINVAL;
-	}
-
-	/* create "/sys/class/my_device/my_device" */
-	device_create(penraw_char_dev_class, NULL, MKDEV(major_number, 0), NULL, DEVICE_NAME);
+	if (goodix_penraw_register())
+		ts_err("pen raw device unavailable; touch input continues");
 
 	return 0;
 }
 
 static void __exit goodix_ts_core_exit(void)
 {
-	dev_t dev = MKDEV(major_number, MINOR_NUMBER_START);
 	ts_info("Core layer exit");
+	goodix_penraw_unregister();
 	platform_driver_unregister(&goodix_ts_driver);
 #ifdef CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI
 	goodix_spi_bus_exit();
 #else
 	goodix_i2c_bus_exit();
 #endif
-	/* remove "/dev/goodix_penraw */
-	device_destroy(penraw_char_dev_class, MKDEV(major_number, 0));
-
-	/* remove class */
-	class_destroy(penraw_char_dev_class);
-
-	/* remove driver */
-	cdev_del(&penraw_char_dev);
-
-	/* release the major number */
-	unregister_chrdev_region(dev, NUMBER_MINOR_NUMBER);
 }
 
 late_initcall(goodix_ts_core_init);

@@ -348,9 +348,29 @@ void apu_qos_off(void)
 	LOG_DEBUG("-\n");
 }
 
+/*
+ * The power-management firmware writes the bound ring index into shared
+ * SRAM. An index at or past MTK_QOS_BUF_SIZE names no ring slot, so the ring
+ * holds no sample window, and a walk that waits for the index never ends.
+ */
+static bool qos_bound_idx_valid(unsigned int idx)
+{
+	if (idx < MTK_QOS_BUF_SIZE)
+		return true;
+
+	pr_warn_once(APUSYS_MNOC_LOG_PREFIX
+		"[warn] %s: ring index %u outside %d slots, bandwidth samples ignored\n",
+		__func__, idx, MTK_QOS_BUF_SIZE);
+	return false;
+}
+
 static void update_cmd_qos(struct qos_bound *qos_info, struct cmd_qos *cmd_qos)
 {
-	unsigned int idx = 0, qos_smi_idx = 0;
+	unsigned int idx = 0, qos_smi_idx = 0, cur_idx;
+
+	cur_idx = READ_ONCE(qos_info->idx);
+	if (!qos_bound_idx_valid(cur_idx))
+		return;
 
 	/* sample device has no BW */
 	if (cmd_qos->core < NR_APU_QOS_ENGINE)
@@ -360,12 +380,11 @@ static void update_cmd_qos(struct qos_bound *qos_info, struct cmd_qos *cmd_qos)
 	mutex_lock(&cmd_qos->mtx);
 	idx = cmd_qos->last_idx;
 
-	if (idx >= QOS_BOUND_BUF_SIZE) {
-		LOG_ERR("idx(%d) out of bound\n", idx);
-		idx = 0;
-	}
+	/* a command enqueued while the ring index was invalid starts here */
+	if (idx >= MTK_QOS_BUF_SIZE)
+		idx = cur_idx;
 
-	while (idx != ((qos_info->idx + 1) % MTK_QOS_BUF_SIZE)) {
+	while (idx != ((cur_idx + 1) % MTK_QOS_BUF_SIZE)) {
 		if (cmd_qos->core < NR_APU_QOS_ENGINE)
 			cmd_qos->total_bw +=
 				qos_info->stats[idx].smibw_mon[qos_smi_idx];
@@ -523,6 +542,7 @@ static void qos_work_func(struct work_struct *work)
 	struct engine_pm_qos_counter *counter = NULL;
 	int qos_smi_idx = 0;
 	int i = 0, idx = 0, current_idx;
+	bool ring_valid;
 	unsigned int peak_bw = 0, total_bw = 0, avg_bw = 0;
 	unsigned int cnt = 0, bw = 0, report_bw = 0;
 #ifdef APU_QOS_IPUIF_ADJUST
@@ -546,9 +566,10 @@ static void qos_work_func(struct work_struct *work)
 		return;
 	}
 
-	current_idx = qos_info->idx;
+	current_idx = READ_ONCE(qos_info->idx);
+	ring_valid = qos_bound_idx_valid(current_idx);
 
-	for (i = 0; i < NR_APU_QOS_ENGINE; i++)	{
+	for (i = 0; ring_valid && i < NR_APU_QOS_ENGINE; i++) {
 		peak_bw = 0;
 		total_bw = 0;
 		cnt = 0;
@@ -556,6 +577,11 @@ static void qos_work_func(struct work_struct *work)
 		qos_smi_idx = get_qosbound_enum(i);
 		/* find peak bandwidth consumption */
 		idx = counter->last_idx;
+		/* a counter started while the ring index was invalid starts here */
+		if (idx >= MTK_QOS_BUF_SIZE) {
+			counter->last_idx = current_idx;
+			continue;
+		}
 		/* prevent overflow */
 		if (idx == current_idx)
 			continue;
@@ -565,7 +591,7 @@ static void qos_work_func(struct work_struct *work)
 			total_bw += bw;
 			cnt++;
 			peak_bw = peak_bw > bw ? peak_bw : bw;
-		} while (idx != qos_info->idx);
+		} while (idx != current_idx);
 
 		LOG_DETAIL("idx[%d](%d ~ %d)\n", i, counter->last_idx, idx);
 

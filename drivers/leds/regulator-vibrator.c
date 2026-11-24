@@ -26,12 +26,19 @@
 #define pr_fmt(fmt) KBUILD_MODNAME " %s(%d) :" fmt, __func__, __LINE__
 
 #define DEFAULT_MIN_LIMIT 15
+#define VIBR_MAX_LEVELS 16
+/* Duty-cycle period; an ERM rotor time constant of tens of ms smooths it. */
+#define VIBR_PWM_PERIOD_MS 20
+#define VIBR_DUTY_MAX 100
 
 struct reg_vibr_config {
 	unsigned int min_limit;
 	unsigned int max_limit;
 	unsigned int min_volt;
 	unsigned int max_volt;
+	/* Supply steps inside [min_volt, max_volt], ascending, in microvolts. */
+	unsigned int levels[VIBR_MAX_LEVELS];
+	unsigned int nlevels;
 	struct regulator *reg;
 };
 
@@ -48,6 +55,13 @@ struct reg_vibr {
 	bool vibr_shutdown;
 	struct reg_vibr_config vibr_conf;
 	struct notifier_block oc_handle;
+	/* Index into vibr_conf.levels applied at the next enable. */
+	unsigned int level;
+	unsigned int applied_uv;
+	/* Percent of each VIBR_PWM_PERIOD_MS the supply stays on. */
+	unsigned int duty;
+	bool pwm_on;
+	struct hrtimer pwm_timer;
 };
 
 static int mt_vibra_parse_dt(struct device *dev,
@@ -112,12 +126,65 @@ static int mt_vibra_parse_dt(struct device *dev,
 
 }
 
+static void vibr_collect_levels(struct reg_vibr_config *conf)
+{
+	int count, i, uv;
+	unsigned int j, u;
+
+	conf->nlevels = 0;
+	if (conf->reg == NULL)
+		return;
+
+	count = regulator_count_voltages(conf->reg);
+	for (i = 0; i < count && conf->nlevels < VIBR_MAX_LEVELS; i++) {
+		/* regulator_list_voltage() returns 0 for table holes. */
+		uv = regulator_list_voltage(conf->reg, i);
+		if (uv <= 0)
+			continue;
+		u = uv;
+		if (u < conf->min_volt || u > conf->max_volt)
+			continue;
+		j = conf->nlevels++;
+		while (j > 0 && conf->levels[j - 1] > u) {
+			conf->levels[j] = conf->levels[j - 1];
+			j--;
+		}
+		conf->levels[j] = u;
+	}
+	pr_info("supply levels in range: %u\n", conf->nlevels);
+}
+
+static int vibr_apply_level(struct reg_vibr *vibr)
+{
+	unsigned int level = READ_ONCE(vibr->level);
+	unsigned int uv;
+	int ret;
+
+	if (vibr->vibr_conf.reg == NULL || !vibr->vibr_conf.nlevels)
+		return 0;
+	if (level >= vibr->vibr_conf.nlevels)
+		level = vibr->vibr_conf.nlevels - 1;
+	uv = vibr->vibr_conf.levels[level];
+	if (uv == vibr->applied_uv)
+		return 0;
+	ret = regulator_set_voltage(vibr->vibr_conf.reg, uv, uv);
+	if (ret < 0) {
+		pr_notice("set voltage %u fail, ret = %d\n", uv, ret);
+		return ret;
+	}
+	vibr->applied_uv = uv;
+	return 0;
+}
+
 static int vibr_power_set(struct reg_vibr *vibr)
 {
 	int ret = 0;
 
 	if (vibr->vibr_conf.reg == NULL)
 		return ret;
+
+	if (vibr->vibr_conf.nlevels)
+		return vibr_apply_level(vibr);
 
 	pr_info("set voltage = %u-%u\n",
 		vibr->vibr_conf.min_volt, vibr->vibr_conf.max_volt);
@@ -140,7 +207,7 @@ static void vibr_enable(struct reg_vibr *vibr)
 		else
 			vibr->reg_status = 1;
 	} else {
-		pr_notice("vibr_reg already enabled.\n");
+		pr_debug("vibr_reg already enabled.\n");
 	}
 }
 
@@ -155,7 +222,7 @@ static void vibr_disable(struct reg_vibr *vibr)
 		else
 			vibr->reg_status = 0;
 	} else {
-		pr_notice("vibr_reg already disabled.\n");
+		pr_debug("vibr_reg already disabled.\n");
 	}
 }
 
@@ -164,7 +231,8 @@ static void update_vibrator(struct work_struct *work)
 
 	struct reg_vibr *vibr = container_of(work, struct reg_vibr, vibr_work);
 
-	pr_info("vibr_state = %d\n", vibr->vibr_state);
+	pr_debug("vibr_state = %d pwm_on = %d\n", vibr->vibr_state,
+		vibr->pwm_on);
 
 	if (vibr->vibr_oc_state) {
 		vibr->vibr_oc_state = false;
@@ -172,10 +240,35 @@ static void update_vibrator(struct work_struct *work)
 		return;
 	}
 
-	if (!vibr->vibr_state)
+	if (!READ_ONCE(vibr->vibr_state) || !READ_ONCE(vibr->pwm_on)) {
 		vibr_disable(vibr);
-	else
-		vibr_enable(vibr);
+		return;
+	}
+	vibr_apply_level(vibr);
+	vibr_enable(vibr);
+}
+
+static u64 vibr_pwm_on_ns(unsigned int duty)
+{
+	return (u64)VIBR_PWM_PERIOD_MS * NSEC_PER_MSEC * duty / VIBR_DUTY_MAX;
+}
+
+static enum hrtimer_restart vibr_pwm_timer_func(struct hrtimer *timer)
+{
+	struct reg_vibr *vibr = container_of(timer, struct reg_vibr, pwm_timer);
+	unsigned int duty = READ_ONCE(vibr->duty);
+	u64 on_ns = vibr_pwm_on_ns(duty);
+	u64 next_ns;
+
+	if (!READ_ONCE(vibr->vibr_state))
+		return HRTIMER_NORESTART;
+
+	vibr->pwm_on = !vibr->pwm_on;
+	queue_work(vibr->vibr_queue, &vibr->vibr_work);
+	next_ns = vibr->pwm_on ? on_ns :
+		(u64)VIBR_PWM_PERIOD_MS * NSEC_PER_MSEC - on_ns;
+	hrtimer_forward_now(timer, ns_to_ktime(next_ns));
+	return HRTIMER_RESTART;
 }
 
 static void vibrator_enable(struct reg_vibr *vibr,
@@ -188,17 +281,24 @@ static void vibrator_enable(struct reg_vibr *vibr,
 		dur, vibr->vibr_shutdown);
 	spin_lock_irqsave(&vibr->vibr_lock, flags);
 	hrtimer_cancel(&vibr->vibr_timer);
+	hrtimer_cancel(&vibr->pwm_timer);
 
 	if (!activate || vibr->vibr_shutdown || !dur) {
 		vibr->vibr_state = 0;
+		vibr->pwm_on = false;
 	} else {
 		dur = max(vibr->vibr_conf.min_limit, dur);
 		if (vibr->vibr_conf.max_limit)
 			dur = min(dur, vibr->vibr_conf.max_limit);
 		vibr->vibr_state = 1;
+		vibr->pwm_on = true;
 		hrtimer_start(&vibr->vibr_timer,
 			      ktime_set(dur / 1000, (dur % 1000) * 1000000),
 			      HRTIMER_MODE_REL);
+		if (vibr->duty < VIBR_DUTY_MAX)
+			hrtimer_start(&vibr->pwm_timer,
+				      ns_to_ktime(vibr_pwm_on_ns(vibr->duty)),
+				      HRTIMER_MODE_REL);
 	}
 	spin_unlock_irqrestore(&vibr->vibr_lock, flags);
 	queue_work(vibr->vibr_queue, &vibr->vibr_work);
@@ -304,12 +404,81 @@ static ssize_t duration_store(struct device *dev,
 	return ret;
 }
 
+static ssize_t level_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct reg_vibr *vibr = dev_get_drvdata(dev->parent);
+
+	return sprintf(buf, "%u\n", READ_ONCE(vibr->level));
+}
+
+static ssize_t level_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct reg_vibr *vibr = dev_get_drvdata(dev->parent);
+	unsigned int level;
+	ssize_t ret;
+
+	ret = kstrtouint(buf, 10, &level);
+	if (ret)
+		return ret;
+	if (level >= max_t(unsigned int, vibr->vibr_conf.nlevels, 1))
+		return -EINVAL;
+	WRITE_ONCE(vibr->level, level);
+	return size;
+}
+
+static ssize_t levels_uv_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct reg_vibr *vibr = dev_get_drvdata(dev->parent);
+	ssize_t len = 0;
+	unsigned int i;
+
+	for (i = 0; i < vibr->vibr_conf.nlevels; i++)
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%s%u",
+				 i ? " " : "", vibr->vibr_conf.levels[i]);
+	len += scnprintf(buf + len, PAGE_SIZE - len, "\n");
+	return len;
+}
+
+static ssize_t duty_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct reg_vibr *vibr = dev_get_drvdata(dev->parent);
+
+	return sprintf(buf, "%u\n", READ_ONCE(vibr->duty));
+}
+
+static ssize_t duty_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct reg_vibr *vibr = dev_get_drvdata(dev->parent);
+	unsigned int duty;
+	ssize_t ret;
+
+	ret = kstrtouint(buf, 10, &duty);
+	if (ret)
+		return ret;
+	if (!duty || duty > VIBR_DUTY_MAX)
+		return -EINVAL;
+	/* Takes effect at the next activation. */
+	WRITE_ONCE(vibr->duty, duty);
+	return size;
+}
+
 static DEVICE_ATTR_RW(activate);
 static DEVICE_ATTR_RW(state);
 static DEVICE_ATTR_RW(duration);
+static DEVICE_ATTR_RW(level);
+static DEVICE_ATTR_RO(levels_uv);
+static DEVICE_ATTR_RW(duty);
 
 static struct attribute *activate_attrs[] = {
 	&dev_attr_activate.attr,
+	&dev_attr_level.attr,
+	&dev_attr_levels_uv.attr,
+	&dev_attr_duty.attr,
 	NULL,
 };
 
@@ -392,6 +561,9 @@ static int vib_probe(struct platform_device *pdev)
 	INIT_WORK(&m_vibr->vibr_work, update_vibrator);
 	spin_lock_init(&m_vibr->vibr_lock);
 	m_vibr->vibr_shutdown = 0;
+	m_vibr->duty = VIBR_DUTY_MAX;
+	m_vibr->pwm_on = false;
+	vibr_collect_levels(&m_vibr->vibr_conf);
 	m_vibr->oc_handle.notifier_call = regulator_oc_event;
 	if (m_vibr->vibr_conf.reg == NULL) {
 		m_vibr->reg_status = 0;
@@ -407,6 +579,8 @@ static int vib_probe(struct platform_device *pdev)
 	}
 	hrtimer_init(&(m_vibr->vibr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	m_vibr->vibr_timer.function = mtk_vibrator_timer_func;
+	hrtimer_init(&m_vibr->pwm_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	m_vibr->pwm_timer.function = vibr_pwm_timer_func;
 	ret = devm_led_classdev_register(&pdev->dev, &led_vibr);
 	if (ret < 0) {
 		pr_info("led class register fail\n");
@@ -432,8 +606,9 @@ static int vib_remove(struct platform_device *pdev)
 {
 	struct reg_vibr *vibr = platform_get_drvdata(pdev);
 
-	cancel_work_sync(&vibr->vibr_work);
+	hrtimer_cancel(&vibr->pwm_timer);
 	hrtimer_cancel(&vibr->vibr_timer);
+	cancel_work_sync(&vibr->vibr_work);
 	devm_led_classdev_unregister(&pdev->dev, &led_vibr);
 
 	return 0;
@@ -447,6 +622,7 @@ static void vib_shutdown(struct platform_device *pdev)
 	pr_info("shutdown: enter!\n");
 	spin_lock_irqsave(&vibr->vibr_lock, flags);
 	vibr->vibr_shutdown = 1;
+	hrtimer_cancel(&vibr->pwm_timer);
 	if (vibr->vibr_state) {
 		vibr->vibr_state = 0;
 		spin_unlock_irqrestore(&vibr->vibr_lock, flags);

@@ -1872,12 +1872,12 @@ static int edo_setbacklight_cmdq(void *dsi, dcs_write_gce cb,
 {
 	u8 buffer[] = {0x51,0x0f,0xff};
 
-	pr_info("edo rm6920h set backlight:%d\n",level);
-
 	if (level != 4095 && level >= 255 && READ_ONCE(hbm_mode)) {
 		bl_rb = 255;
 		level = 4095;
 	}
+
+	pr_info("edo rm6920h set backlight:%d\n",level);
 
 	if(level == 4095){
 		bl_tb0[1] = ((level >> 8) & 0xf);

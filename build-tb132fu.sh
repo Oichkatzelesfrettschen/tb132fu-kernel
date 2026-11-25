@@ -7,7 +7,7 @@ out_dir=${OUT_DIR:-$source_dir/out}
 clang_dir=${CLANG_DIR:-}
 jobs=${JOBS:-$(nproc)}
 build_version=${KBUILD_BUILD_VERSION:-52}
-expected_config_sha=88aa4d96625d908bb0fec9e734df6045f00aed9f117bcfc1fa31b8b44e31bf1c
+expected_config_sha=99607db02ee49d5b3fef2c387f2e2ff7d11b39d84e5535aa0012e08ddcbd71e6
 
 if [[ -z "$clang_dir" || ! -x "$clang_dir/bin/clang" ]]; then
     echo 'Set CLANG_DIR to the Android clang-r383902 prebuilt root.' >&2

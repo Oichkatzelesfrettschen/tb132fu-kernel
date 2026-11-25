@@ -74,6 +74,11 @@ struct reg_vibr {
 	unsigned int applied_uv;
 	/* Percent of each VIBR_PWM_PERIOD_MS the supply stays on. */
 	unsigned int duty;
+	/* level and duty captured when an activation is accepted; every PWM
+	 * phase of that activation uses them.
+	 */
+	unsigned int act_level;
+	unsigned int act_duty;
 	bool pwm_on;
 	struct hrtimer pwm_timer;
 };
@@ -252,10 +257,16 @@ static void vibr_collect_levels(struct reg_vibr_config *conf)
 		conf->trim_map ? "on" : "off");
 }
 
+/*
+ * The output is the regulator voltage plus the trim offset, and a select-code
+ * write keeps the trim field. A falling trim is written before the voltage
+ * changes and a rising trim after it, so no intermediate output exceeds the
+ * larger of the old and new levels.
+ */
 static int vibr_apply_level(struct reg_vibr *vibr)
 {
-	unsigned int level = READ_ONCE(vibr->level);
-	unsigned int uv;
+	unsigned int level = READ_ONCE(vibr->act_level);
+	unsigned int uv, trim;
 	int ret;
 	struct reg_vibr_config *conf = &vibr->vibr_conf;
 
@@ -264,6 +275,14 @@ static int vibr_apply_level(struct reg_vibr *vibr)
 	if (level >= vibr->vibr_conf.nlevels)
 		level = vibr->vibr_conf.nlevels - 1;
 	uv = conf->base_uv[level];
+	trim = conf->trim[level];
+	if (trim < conf->applied_trim) {
+		ret = vibr_write_trim(conf, trim);
+		if (ret < 0) {
+			pr_notice("set trim %u fail, ret = %d\n", trim, ret);
+			return ret;
+		}
+	}
 	if (uv != vibr->applied_uv) {
 		ret = regulator_set_voltage(conf->reg, uv, uv);
 		if (ret < 0) {
@@ -272,9 +291,9 @@ static int vibr_apply_level(struct reg_vibr *vibr)
 		}
 		vibr->applied_uv = uv;
 	}
-	ret = vibr_write_trim(conf, conf->trim[level]);
+	ret = vibr_write_trim(conf, trim);
 	if (ret < 0)
-		pr_notice("set trim %u fail, ret = %d\n", conf->trim[level], ret);
+		pr_notice("set trim %u fail, ret = %d\n", trim, ret);
 	return ret;
 }
 
@@ -336,17 +355,18 @@ static void update_vibrator(struct work_struct *work)
 	pr_debug("vibr_state = %d pwm_on = %d\n", vibr->vibr_state,
 		vibr->pwm_on);
 
-	if (vibr->vibr_oc_state) {
-		vibr->vibr_oc_state = false;
+	/* An over-current fault holds the output off until the next accepted
+	 * activation clears it.
+	 */
+	if (READ_ONCE(vibr->vibr_oc_state) || READ_ONCE(vibr->vibr_shutdown) ||
+	    !READ_ONCE(vibr->vibr_state) || !READ_ONCE(vibr->pwm_on)) {
 		vibr_disable(vibr);
 		return;
 	}
-
-	if (!READ_ONCE(vibr->vibr_state) || !READ_ONCE(vibr->pwm_on)) {
+	if (vibr_apply_level(vibr) < 0) {
 		vibr_disable(vibr);
 		return;
 	}
-	vibr_apply_level(vibr);
 	vibr_enable(vibr);
 }
 
@@ -358,11 +378,11 @@ static u64 vibr_pwm_on_ns(unsigned int duty)
 static enum hrtimer_restart vibr_pwm_timer_func(struct hrtimer *timer)
 {
 	struct reg_vibr *vibr = container_of(timer, struct reg_vibr, pwm_timer);
-	unsigned int duty = READ_ONCE(vibr->duty);
+	unsigned int duty = READ_ONCE(vibr->act_duty);
 	u64 on_ns = vibr_pwm_on_ns(duty);
 	u64 next_ns;
 
-	if (!READ_ONCE(vibr->vibr_state))
+	if (!READ_ONCE(vibr->vibr_state) || READ_ONCE(vibr->vibr_oc_state))
 		return HRTIMER_NORESTART;
 
 	vibr->pwm_on = !vibr->pwm_on;
@@ -392,14 +412,17 @@ static void vibrator_enable(struct reg_vibr *vibr,
 		dur = max(vibr->vibr_conf.min_limit, dur);
 		if (vibr->vibr_conf.max_limit)
 			dur = min(dur, vibr->vibr_conf.max_limit);
+		WRITE_ONCE(vibr->act_level, READ_ONCE(vibr->level));
+		WRITE_ONCE(vibr->act_duty, READ_ONCE(vibr->duty));
+		WRITE_ONCE(vibr->vibr_oc_state, false);
 		vibr->vibr_state = 1;
 		vibr->pwm_on = true;
 		hrtimer_start(&vibr->vibr_timer,
 			      ktime_set(dur / 1000, (dur % 1000) * 1000000),
 			      HRTIMER_MODE_REL);
-		if (vibr->duty < VIBR_DUTY_MAX)
+		if (vibr->act_duty < VIBR_DUTY_MAX)
 			hrtimer_start(&vibr->pwm_timer,
-				      ns_to_ktime(vibr_pwm_on_ns(vibr->duty)),
+				      ns_to_ktime(vibr_pwm_on_ns(vibr->act_duty)),
 				      HRTIMER_MODE_REL);
 	}
 	spin_unlock_irqrestore(&vibr->vibr_lock, flags);
@@ -627,7 +650,7 @@ static int regulator_oc_event(struct notifier_block *nb,
 	case REGULATOR_EVENT_OVER_CURRENT:
 	case REGULATOR_EVENT_FAIL:
 		pr_info("get regulator oc event: %lu", event);
-		vibr->vibr_oc_state = true;
+		WRITE_ONCE(vibr->vibr_oc_state, true);
 		schedule_work(&vibr->vibr_work);
 		break;
 	default:
@@ -726,14 +749,12 @@ static void vib_shutdown(struct platform_device *pdev)
 	spin_lock_irqsave(&vibr->vibr_lock, flags);
 	vibr->vibr_shutdown = 1;
 	hrtimer_cancel(&vibr->pwm_timer);
-	if (vibr->vibr_state) {
-		vibr->vibr_state = 0;
-		spin_unlock_irqrestore(&vibr->vibr_lock, flags);
-		pr_info("vibrator will disable!\n");
-		vibr_disable(vibr);
-	} else {
-		spin_unlock_irqrestore(&vibr->vibr_lock, flags);
-	}
+	hrtimer_cancel(&vibr->vibr_timer);
+	vibr->vibr_state = 0;
+	spin_unlock_irqrestore(&vibr->vibr_lock, flags);
+	/* A queued update could otherwise enable the output after the reset. */
+	cancel_work_sync(&vibr->vibr_work);
+	vibr_disable(vibr);
 	vibr_write_trim(&vibr->vibr_conf, 0);
 }
 

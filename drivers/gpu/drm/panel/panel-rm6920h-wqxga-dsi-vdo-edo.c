@@ -70,6 +70,8 @@ static char bl_init_seq[] = {0x51, 0x7, 0xff};
 static struct edo *bl_ctx;
 bool lcm_is_power_on = true;
 static int bl_rb = 0;
+/* While set, a request at the top normal level (255) drives the HBM level 4095. */
+static int hbm_mode = 0;
 #define edo_oled_dcs_write_seq(ctx, seq...)                                     \
 	({                                                                     \
 		const u8 d[] = {seq};                                          \
@@ -1872,6 +1874,11 @@ static int edo_setbacklight_cmdq(void *dsi, dcs_write_gce cb,
 
 	pr_info("edo rm6920h set backlight:%d\n",level);
 
+	if (level != 4095 && level >= 255 && READ_ONCE(hbm_mode)) {
+		bl_rb = 255;
+		level = 4095;
+	}
+
 	if(level == 4095){
 		bl_tb0[1] = ((level >> 8) & 0xf);
 		bl_tb0[2] = (level & 0xff);
@@ -2098,7 +2105,6 @@ static ssize_t lcm_name_show(struct device *dev,
 static DEVICE_ATTR(lcd_name, 0664, lcm_name_show, NULL);
 
 //add oled hbm node
-static int hbm_mode = 0;//0:disable hbm   1:enable hbm
 extern int mtkfb_set_backlight_level(unsigned int level);
 
 static ssize_t lcm_hbm_get(struct device *dev,
@@ -2117,9 +2123,12 @@ static ssize_t lcm_hbm_set(struct device *dev,
 
 	if(*buf == '1'){
 		pr_info("hbm is on\n");
-		mtkfb_set_backlight_level(4095);
+		WRITE_ONCE(hbm_mode, 1);
+		if (bl_rb >= 255)
+			mtkfb_set_backlight_level(4095);
 	}else if(*buf == '0'){
 		pr_info("hbm is off\n");
+		WRITE_ONCE(hbm_mode, 0);
 		mtkfb_set_backlight_level(bl_rb);
 	}
 

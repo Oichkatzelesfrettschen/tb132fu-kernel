@@ -1610,6 +1610,8 @@ static const struct drm_display_mode performance_mode_1 = {
 #if defined(CONFIG_MTK_PANEL_EXT)
 
 static struct mtk_panel_params ext_params = {
+	/* The OVL converts each plane's dataspace to this gamut when MTK_DRM_OPT_OVL_WCG is set. */
+	.lcm_color_mode = MTK_DRM_COLOR_MODE_DISPLAY_P3,
 	.cust_esd_check = 1,
 	.esd_check_enable = 1,
 	.lcm_esd_check_table[0] = {
@@ -1739,6 +1741,7 @@ static struct mtk_panel_params ext_params = {
 
 #if LCM_CHANGE_FPS
 static struct mtk_panel_params ext_params_1 = {
+	.lcm_color_mode = MTK_DRM_COLOR_MODE_DISPLAY_P3,
 	.cust_esd_check = 1,
 	.esd_check_enable = 1,
 	.lcm_esd_check_table[0] = {

@@ -20,7 +20,13 @@
 
 #include <uapi/linux/kexec.h>
 
-#ifdef CONFIG_KEXEC_CORE
+/*
+ * genksyms sees the !CONFIG_KEXEC_CORE declarations: the CRC of every export
+ * in a file that includes this header (notify_change, kernel_kobj,
+ * phys_mem_access_prot, ...) then stays independent of CONFIG_KEXEC_CORE, and
+ * modules built against a kernel without it keep loading.
+ */
+#if defined(CONFIG_KEXEC_CORE) && !defined(__GENKSYMS__)
 #include <linux/list.h>
 #include <linux/compat.h>
 #include <linux/ioport.h>

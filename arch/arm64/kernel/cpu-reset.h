@@ -23,8 +23,14 @@ static inline void __noreturn cpu_soft_restart(unsigned long entry,
 {
 	typeof(__cpu_soft_restart) *restart;
 
+	/*
+	 * HVC_SOFT_RESTART reaches the hyp stub only when the kernel owns EL2.
+	 * In gz_lend_mode the HVC traps to the lending hypervisor, which
+	 * returns without branching to @entry, so the next kernel starts at
+	 * EL1 as this one did.
+	 */
 	unsigned long el2_switch = !is_kernel_in_hyp_mode() &&
-		is_hyp_mode_available();
+		is_hyp_mode_available() && !gz_lend_mode;
 	restart = (void *)__pa_function(__cpu_soft_restart);
 
 	cpu_install_idmap();

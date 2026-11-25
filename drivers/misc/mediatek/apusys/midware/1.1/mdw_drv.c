@@ -24,10 +24,18 @@
 
 /* define */
 #define APUSYS_DEV_NAME "apusys"
+/*
+ * A second node with the same file operations: the platform policy can label
+ * it for one app domain while the vendor-labeled node keeps its own rules.
+ * mdw_open keeps all per-file state in filp->private_data, so both nodes
+ * behave identically.
+ */
+#define APUSYS_APP_DEV_NAME "apuapp"
 
 /* global variable */
 struct device *mdw_device;
 struct miscdevice mdw_miscdev;
+static struct miscdevice mdw_app_miscdev;
 
 /* function declaration */
 static int mdw_open(struct inode *, struct file *);
@@ -90,6 +98,15 @@ static int mdw_probe(struct platform_device *pdev)
 		goto out;
 	}
 
+	memset(&mdw_app_miscdev, 0, sizeof(mdw_app_miscdev));
+	mdw_app_miscdev.minor = MISC_DYNAMIC_MINOR;
+	mdw_app_miscdev.name = APUSYS_APP_DEV_NAME;
+	mdw_app_miscdev.fops = &mdw_fops;
+	if (misc_register(&mdw_app_miscdev)) {
+		mdw_drv_err("register app misc device fail\n");
+		mdw_app_miscdev.fops = NULL;
+	}
+
 	mdw_dbg_init();
 	mdw_sysfs_init(mdw_miscdev.this_device);
 	mdw_tag_init();
@@ -112,6 +129,8 @@ static int mdw_remove(struct platform_device *pdev)
 	mdw_tag_exit();
 	mdw_sysfs_exit();
 	mdw_dbg_exit();
+	if (mdw_app_miscdev.fops)
+		misc_deregister(&mdw_app_miscdev);
 	misc_deregister(&mdw_miscdev);
 	mdw_device = NULL;
 

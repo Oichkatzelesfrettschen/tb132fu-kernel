@@ -85,8 +85,11 @@ struct target_core_fabric_ops {
 				struct se_lun *);
 	void (*fabric_pre_unlink)(struct se_portal_group *,
 				struct se_lun *);
+	/* Hidden from genksyms: only the core allocates this object, and prebuilt modules were built against the layout without the field. */
+#ifndef __GENKSYMS__
 	void (*fabric_post_unlink)(struct se_portal_group *se_tpg,
 				   struct se_lun *lun);
+#endif
 	struct se_tpg_np *(*fabric_make_np)(struct se_portal_group *,
 				struct config_group *, const char *);
 	void (*fabric_drop_np)(struct se_tpg_np *);

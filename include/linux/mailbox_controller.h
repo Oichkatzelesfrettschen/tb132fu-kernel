@@ -121,7 +121,10 @@ struct mbox_chan {
 	unsigned txdone_method;
 	struct mbox_client *cl;
 	struct completion tx_complete;
+	/* Hidden from genksyms: only the core allocates this object, and prebuilt modules were built against the layout without the field. */
+#ifndef __GENKSYMS__
 	int tx_status;
+#endif
 	void *active_req;
 	unsigned msg_count, msg_free;
 	void *msg_data[MBOX_TX_QUEUE_LEN];

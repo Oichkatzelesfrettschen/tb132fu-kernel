@@ -116,7 +116,10 @@ struct ip6_sf_list {
 	unsigned char		sf_gsresp;	/* include in g & s response? */
 	unsigned char		sf_oldin;	/* change state */
 	unsigned char		sf_crcount;	/* retrans. left to send */
+	/* Hidden from genksyms: only the core allocates this object, and prebuilt modules were built against the layout without the field. */
+#ifndef __GENKSYMS__
 	struct rcu_head		rcu;
+#endif
 };
 
 #define MAF_TIMER_RUNNING	0x01

@@ -316,7 +316,10 @@ struct bpf_array {
 	 */
 	enum bpf_prog_type owner_prog_type;
 	bool owner_jited;
+	/* Hidden from genksyms: only the core allocates this object, and prebuilt modules were built against the layout without the field. */
+#ifndef __GENKSYMS__
 	enum bpf_attach_type owner_attach_type;
+#endif
 	union {
 		char value[0] __aligned(8);
 		void *ptrs[0] __aligned(8);

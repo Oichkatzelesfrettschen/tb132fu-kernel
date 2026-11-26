@@ -671,7 +671,12 @@ struct ip_vs_dest {
 
 	/* connection counters and thresholds */
 	atomic_t		activeconns;	/* active connections */
+	/* genksyms keeps the former member name; type, size and offset are unchanged. */
+#ifdef __GENKSYMS__
+	atomic_t		inactconns;
+#else
 	atomic_t		totalconns;	/* total connections */
+#endif
 	atomic_t		persistconns;	/* persistent connections */
 	__u32			u_threshold;	/* upper threshold */
 	__u32			l_threshold;	/* lower threshold */

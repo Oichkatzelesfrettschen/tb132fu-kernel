@@ -466,8 +466,11 @@ struct rproc {
 	struct idr notifyids;
 	int index;
 	struct work_struct crash_handler;
+	/* Hidden from genksyms: only the core allocates this object, and prebuilt modules were built against the layout without the field. */
+#ifndef __GENKSYMS__
 	spinlock_t crash_handler_lock;
 	bool deleting;
+#endif
 	unsigned int crash_cnt;
 	bool recovery_disabled;
 	int max_notifyid;

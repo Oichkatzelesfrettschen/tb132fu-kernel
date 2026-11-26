@@ -149,7 +149,6 @@ struct console {
 	struct tty_driver *(*device)(struct console *, int *);
 	void	(*unblank)(void);
 	int	(*setup)(struct console *, char *);
-	int	(*exit)(struct console *);
 	int	(*match)(struct console *, char *name, int idx, char *options);
 	short	flags;
 	short	index;
@@ -158,6 +157,14 @@ struct console {
 	uint	ospeed;
 	void	*data;
 	struct	 console *next;
+	/*
+	 * Placed last and hidden from genksyms: every member keeps the offset
+	 * prebuilt modules were built against; consoles are defined by built-in
+	 * drivers only.
+	 */
+#ifndef __GENKSYMS__
+	int	(*exit)(struct console *);
+#endif
 };
 
 /*

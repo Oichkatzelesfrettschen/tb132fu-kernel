@@ -85,7 +85,6 @@ struct Qdisc {
 	struct hlist_node       hash;
 	u32			handle;
 	u32			parent;
-	int			depth;
 
 	struct netdev_queue	*dev_queue;
 
@@ -110,6 +109,13 @@ struct Qdisc {
 	spinlock_t		busylock ____cacheline_aligned_in_smp;
 	spinlock_t		seqlock;
 	struct rcu_head		rcu;
+	/*
+	 * Placed last and hidden from genksyms: prebuilt modules keep every
+	 * member offset they were built against; only the core allocates a Qdisc.
+	 */
+#ifndef __GENKSYMS__
+	int			depth;
+#endif
 };
 
 static inline void qdisc_refcount_inc(struct Qdisc *qdisc)

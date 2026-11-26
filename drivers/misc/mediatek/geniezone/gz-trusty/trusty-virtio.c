@@ -27,6 +27,7 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
+#include <linux/kexec.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
@@ -1146,6 +1147,17 @@ static int trusty_virtio_remove(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * The secure side keeps its virtio bus started until SMCF_SC_VIRTIO_STOP
+ * releases the shared area. A kernel started by kexec cannot stop a bus it
+ * did not start, so the bus goes down here, before the jump.
+ */
+static void trusty_virtio_shutdown(struct platform_device *pdev)
+{
+	if (kexec_in_progress)
+		trusty_virtio_remove(pdev);
+}
+
 static const struct of_device_id trusty_of_match[] = {
 	{ .compatible = "android,trusty-virtio-v1", },
 	{},
@@ -1156,6 +1168,7 @@ MODULE_DEVICE_TABLE(of, trusty_of_match);
 static struct platform_driver trusty_virtio_driver = {
 	.probe = trusty_virtio_probe,
 	.remove = trusty_virtio_remove,
+	.shutdown = trusty_virtio_shutdown,
 	.driver = {
 		   .name = "trusty-virtio",
 		   .owner = THIS_MODULE,
@@ -1173,6 +1186,7 @@ MODULE_DEVICE_TABLE(of, nebula_of_match);
 static struct platform_driver nebula_virtio_driver = {
 	.probe = trusty_virtio_probe,
 	.remove = trusty_virtio_remove,
+	.shutdown = trusty_virtio_shutdown,
 	.driver = {
 		   .name = "nebula-virtio",
 		   .owner = THIS_MODULE,

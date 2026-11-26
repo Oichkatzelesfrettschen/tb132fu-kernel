@@ -817,6 +817,15 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 	/* start virtio */
 	ret = trusty_virtio_start(tctx, descr_va, descr_sz);
 	if (ret) {
+		/*
+		 * The secure side keeps the bus started when the previous
+		 * kernel was replaced without a stop (kexec); a stop returns
+		 * it to idle, after which the start is accepted.
+		 */
+		trusty_virtio_stop(tctx, descr_va, descr_sz);
+		ret = trusty_virtio_start(tctx, descr_va, descr_sz);
+	}
+	if (ret) {
 		dev_info(tctx->dev, "failed (%d) to start virtio\n", ret);
 		goto err_start_virtio;
 	}

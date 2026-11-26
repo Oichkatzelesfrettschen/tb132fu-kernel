@@ -16,6 +16,8 @@
 #include <linux/syscalls.h>
 #include <linux/syscore_ops.h>
 #include <linux/uaccess.h>
+#include <linux/workqueue.h>
+#include <linux/moduleparam.h>
 
 /*
  * this indicates whether you can reboot with ctrl-alt-del: the default is yes
@@ -592,3 +594,29 @@ static int __init reboot_setup(char *str)
 	return 1;
 }
 __setup("reboot=", reboot_setup);
+
+/*
+ * reboot_after=<seconds> on the command line restarts the machine that long
+ * after the initcalls unless /sys/module/reboot/parameters/reboot_after is
+ * set to 0 first. A kernel started for a test (kexec) names its own time
+ * limit this way, and the restart keeps the pstore console of that boot.
+ */
+static int reboot_after;
+module_param(reboot_after, int, 0644);
+
+static void reboot_after_fn(struct work_struct *work)
+{
+	if (reboot_after > 0) {
+		pr_emerg("reboot_after: %d s elapsed, restarting\n", reboot_after);
+		emergency_restart();
+	}
+}
+static DECLARE_DELAYED_WORK(reboot_after_work, reboot_after_fn);
+
+static int __init reboot_after_init(void)
+{
+	if (reboot_after > 0)
+		schedule_delayed_work(&reboot_after_work, reboot_after * HZ);
+	return 0;
+}
+late_initcall(reboot_after_init);

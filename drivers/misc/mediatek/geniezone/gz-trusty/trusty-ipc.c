@@ -2204,7 +2204,7 @@ static void tipc_virtio_remove(struct virtio_device *vdev)
 		_cleanup_vq(vds->txvq[i]);
 	_free_msg_buf_list(&vds->free_buf_list);
 
-	vdev->config->del_vqs(vds->vdev);
+	vdev->config->del_vqs(vdev);
 
 	kref_put(&vds->refcount, _free_vds);
 }

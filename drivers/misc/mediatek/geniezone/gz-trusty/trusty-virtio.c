@@ -27,6 +27,7 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
+#include <linux/kexec.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
@@ -761,6 +762,7 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 	void *descr_va;
 	size_t descr_sz;
 	size_t descr_buf_sz;
+	bool stop = true;
 
 	/* allocate buffer to load device descriptor into */
 	descr_buf_sz = PAGE_SIZE;
@@ -818,6 +820,12 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 	ret = trusty_virtio_start(tctx, descr_va, descr_sz);
 	if (ret) {
 		dev_info(tctx->dev, "failed (%d) to start virtio\n", ret);
+		/*
+		 * A refused start means the secure side holds a bus this
+		 * kernel did not start (kexec); SMCF_SC_VIRTIO_STOP issued
+		 * for that bus does not return.
+		 */
+		stop = false;
 		goto err_start_virtio;
 	}
 
@@ -837,7 +845,8 @@ err_register_notifier:
 err_parse_descr:
 	_remove_devices_locked(tctx);
 	mutex_unlock(&tctx->mlock);
-	trusty_virtio_stop(tctx, descr_va, descr_sz);
+	if (stop)
+		trusty_virtio_stop(tctx, descr_va, descr_sz);
 err_load_descr:
 	free_pages_exact(descr_va, descr_buf_sz);
 	return ret;
@@ -1138,6 +1147,17 @@ static int trusty_virtio_remove(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * The secure side keeps its virtio bus started until SMCF_SC_VIRTIO_STOP
+ * releases the shared area. A kernel started by kexec cannot stop a bus it
+ * did not start, so the bus goes down here, before the jump.
+ */
+static void trusty_virtio_shutdown(struct platform_device *pdev)
+{
+	if (kexec_in_progress)
+		trusty_virtio_remove(pdev);
+}
+
 static const struct of_device_id trusty_of_match[] = {
 	{ .compatible = "android,trusty-virtio-v1", },
 	{},
@@ -1148,6 +1168,7 @@ MODULE_DEVICE_TABLE(of, trusty_of_match);
 static struct platform_driver trusty_virtio_driver = {
 	.probe = trusty_virtio_probe,
 	.remove = trusty_virtio_remove,
+	.shutdown = trusty_virtio_shutdown,
 	.driver = {
 		   .name = "trusty-virtio",
 		   .owner = THIS_MODULE,
@@ -1165,6 +1186,7 @@ MODULE_DEVICE_TABLE(of, nebula_of_match);
 static struct platform_driver nebula_virtio_driver = {
 	.probe = trusty_virtio_probe,
 	.remove = trusty_virtio_remove,
+	.shutdown = trusty_virtio_shutdown,
 	.driver = {
 		   .name = "nebula-virtio",
 		   .owner = THIS_MODULE,

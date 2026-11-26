@@ -545,10 +545,16 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 			pin_recv->recv_record.recv_irq_count++;
 			irq_temp = irq_temp | (0x1 << pin_recv->pin_index);
 			/*check user buf*/
+			/*
+			 * A sender that outlives the previous kernel (kexec)
+			 * can hold this pin pending before its receiver
+			 * registers a buffer; the message has no consumer, so
+			 * the pin is acknowledged and the message dropped.
+			 */
 			if (!pin_recv->pin_buf) {
-				pr_err("[MBOX Error]null ptr dev=%s ipi_id=%d",
+				pr_err_ratelimited("[MBOX Error]no buffer, dropped: dev=%s ipi_id=%d\n",
 					mbdev->name, pin_recv->chan_id);
-				BUG_ON(1);
+				continue;
 			}
 			if (minfo->opt == MBOX_OPT_QUEUE_DIR ||
 			 minfo->opt == MBOX_OPT_QUEUE_SMEM) {

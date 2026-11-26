@@ -110,12 +110,16 @@ struct ipv6_mc_socklist {
 };
 
 struct ip6_sf_list {
-	struct ip6_sf_list	*sf_next;
+	struct ip6_sf_list __rcu *sf_next;
 	struct in6_addr		sf_addr;
 	unsigned long		sf_count[2];	/* include/exclude counts */
 	unsigned char		sf_gsresp;	/* include in g & s response? */
 	unsigned char		sf_oldin;	/* change state */
 	unsigned char		sf_crcount;	/* retrans. left to send */
+	/* Hidden from genksyms: only the core allocates this object, and prebuilt modules were built against the layout without the field. */
+#ifndef __GENKSYMS__
+	struct rcu_head		rcu;
+#endif
 };
 
 #define MAF_TIMER_RUNNING	0x01
@@ -128,8 +132,8 @@ struct ifmcaddr6 {
 	struct in6_addr		mca_addr;
 	struct inet6_dev	*idev;
 	struct ifmcaddr6	*next;
-	struct ip6_sf_list	*mca_sources;
-	struct ip6_sf_list	*mca_tomb;
+	struct ip6_sf_list	__rcu *mca_sources;
+	struct ip6_sf_list	__rcu *mca_tomb;
 	unsigned int		mca_sfmode;
 	unsigned char		mca_crcount;
 	unsigned long		mca_sfcount[2];

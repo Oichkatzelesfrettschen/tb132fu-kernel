@@ -109,6 +109,13 @@ struct Qdisc {
 	spinlock_t		busylock ____cacheline_aligned_in_smp;
 	spinlock_t		seqlock;
 	struct rcu_head		rcu;
+	/*
+	 * Placed last and hidden from genksyms: prebuilt modules keep every
+	 * member offset they were built against; only the core allocates a Qdisc.
+	 */
+#ifndef __GENKSYMS__
+	int			depth;
+#endif
 };
 
 static inline void qdisc_refcount_inc(struct Qdisc *qdisc)
@@ -501,6 +508,7 @@ static inline void sch_tree_unlock(const struct Qdisc *q)
 extern struct Qdisc noop_qdisc;
 extern struct Qdisc_ops noop_qdisc_ops;
 extern struct Qdisc_ops pfifo_fast_ops;
+extern const u8 sch_default_prio2band[TC_PRIO_MAX + 1];
 extern struct Qdisc_ops mq_qdisc_ops;
 extern struct Qdisc_ops noqueue_qdisc_ops;
 extern const struct Qdisc_ops *default_qdisc_ops;

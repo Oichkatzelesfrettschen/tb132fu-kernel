@@ -157,6 +157,14 @@ struct console {
 	uint	ospeed;
 	void	*data;
 	struct	 console *next;
+	/*
+	 * Placed last and hidden from genksyms: every member keeps the offset
+	 * prebuilt modules were built against; consoles are defined by built-in
+	 * drivers only.
+	 */
+#ifndef __GENKSYMS__
+	int	(*exit)(struct console *);
+#endif
 };
 
 /*

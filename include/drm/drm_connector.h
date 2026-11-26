@@ -1374,13 +1374,26 @@ struct drm_tile_group {
 	struct kref refcount;
 	struct drm_device *dev;
 	int id;
+	/* The ninth byte lies in the tail padding (size 32 either way); genksyms keeps the former bound. */
+#ifdef __GENKSYMS__
 	u8 group_data[8];
+#else
+	u8 group_data[9];
+#endif
 };
 
+/* An array parameter is a pointer in the ABI; genksyms keeps the former spelling. */
+#ifdef __GENKSYMS__
 struct drm_tile_group *drm_mode_create_tile_group(struct drm_device *dev,
 						  char topology[8]);
 struct drm_tile_group *drm_mode_get_tile_group(struct drm_device *dev,
 					       char topology[8]);
+#else
+struct drm_tile_group *drm_mode_create_tile_group(struct drm_device *dev,
+						  char topology_id[9]);
+struct drm_tile_group *drm_mode_get_tile_group(struct drm_device *dev,
+					       char topology_id[9]);
+#endif
 void drm_mode_put_tile_group(struct drm_device *dev,
 			     struct drm_tile_group *tg);
 

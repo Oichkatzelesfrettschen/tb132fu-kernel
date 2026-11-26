@@ -37,6 +37,7 @@
 
 #include <linux/types.h>
 #include <linux/mutex.h>
+#include <linux/spinlock.h>
 #include <linux/virtio.h>
 #include <linux/completion.h>
 #include <linux/idr.h>
@@ -432,6 +433,8 @@ struct rproc_dump_segment {
  * @notifyids: idr for dynamically assigning rproc-wide unique notify ids
  * @index: index of this rproc device
  * @crash_handler: workqueue for handling a crash
+ * @crash_handler_lock: serializes crash handler queueing and deletion
+ * @deleting: remoteproc deletion has begun
  * @crash_cnt: crash counter
  * @recovery_disabled: flag that state if recovery was disabled
  * @max_notifyid: largest allocated notify id.
@@ -463,6 +466,11 @@ struct rproc {
 	struct idr notifyids;
 	int index;
 	struct work_struct crash_handler;
+	/* Hidden from genksyms: only the core allocates this object, and prebuilt modules were built against the layout without the field. */
+#ifndef __GENKSYMS__
+	spinlock_t crash_handler_lock;
+	bool deleting;
+#endif
 	unsigned int crash_cnt;
 	bool recovery_disabled;
 	int max_notifyid;

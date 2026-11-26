@@ -1152,10 +1152,26 @@ static int trusty_virtio_remove(struct platform_device *pdev)
  * releases the shared area. A kernel started by kexec cannot stop a bus it
  * did not start, so the bus goes down here, before the jump.
  */
+static int kexec_stop = 1;
+module_param(kexec_stop, int, 0644);
+MODULE_PARM_DESC(kexec_stop,
+	"before a kexec jump: 0 leave the bus, 1 stop the bus, 2 remove the devices and stop the bus");
+
 static void trusty_virtio_shutdown(struct platform_device *pdev)
 {
-	if (kexec_in_progress)
+	struct trusty_ctx *tctx = platform_get_drvdata(pdev);
+
+	if (!kexec_in_progress || !tctx)
+		return;
+	/*
+	 * Removing the devices waits on clients that can no longer run at
+	 * this point of the shutdown (storage is quiesced), so the default
+	 * issues the stop alone and abandons the kernel-side state.
+	 */
+	if (kexec_stop == 2)
 		trusty_virtio_remove(pdev);
+	else if (kexec_stop == 1 && tctx->shared_va)
+		trusty_virtio_stop(tctx, tctx->shared_va, tctx->shared_sz);
 }
 
 static const struct of_device_id trusty_of_match[] = {

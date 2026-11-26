@@ -26,6 +26,7 @@
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/syscore_ops.h>
 #include <linux/platform_device.h>
 #include <linux/completion.h>
@@ -2611,6 +2612,12 @@ static int eemg_probe(struct platform_device *pdev)
 	informEEMisReady = 1;
 
 	/* set EEM IRQ */
+	/*
+	 * eemg_isr() dereferences det->ops, which eemg_init_det() sets below;
+	 * a detector left running by a previous kernel (kexec) holds the line
+	 * asserted already, so the line stays masked until then.
+	 */
+	irq_set_status_flags(eemg_irq_number, IRQ_NOAUTOEN);
 	ret = request_irq(eemg_irq_number, eemg_isr,
 			IRQF_TRIGGER_HIGH, "eemg", NULL);
 	if (ret) {
@@ -2645,6 +2652,17 @@ static int eemg_probe(struct platform_device *pdev)
 	/* for slow idle */
 	for_each_det(det)
 		eemg_init_det(det, &eemg_devinfo);
+
+	for_each_det(det) {
+		unsigned long flag;
+
+		mt_ptpgpu_lock(&flag);
+		det->ops->switch_bank_gpu(det, NR_EEMG_PHASE);
+		eemg_write(EEMGEN, 0x0 | SEC_MOD_SEL);
+		eemg_write(EEMGINTSTS, 0xffffffff);
+		mt_ptpgpu_unlock(&flag);
+	}
+	enable_irq(eemg_irq_number);
 
 
 	final_init01_flag = EEMG_INIT01_FLAG;

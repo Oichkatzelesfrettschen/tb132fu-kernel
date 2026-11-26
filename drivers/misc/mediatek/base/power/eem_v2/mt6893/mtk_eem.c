@@ -26,6 +26,7 @@
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/syscore_ops.h>
 #include <linux/platform_device.h>
 #include <linux/completion.h>
@@ -2847,6 +2848,12 @@ static int eem_probe(struct platform_device *pdev)
 	informEEMisReady = 1;
 
 	/* set EEM IRQ */
+	/*
+	 * eem_isr() dereferences det->ops, which eem_init_det() sets below; a
+	 * detector left running by a previous kernel (kexec) holds the line
+	 * asserted already, so the line stays masked until then.
+	 */
+	irq_set_status_flags(eem_irq_number, IRQ_NOAUTOEN);
 	ret = request_irq(eem_irq_number, eem_isr,
 			IRQF_TRIGGER_HIGH, "eem", NULL);
 	if (ret) {
@@ -2878,6 +2885,16 @@ static int eem_probe(struct platform_device *pdev)
 	for_each_det(det)
 		eem_init_det(det, &eem_devinfo);
 
+	for_each_det(det) {
+		unsigned long flag;
+
+		mt_ptp_lock(&flag);
+		det->ops->switch_bank(det, NR_EEM_PHASE);
+		eem_write(EEMEN, 0x0 | SEC_MOD_SEL);
+		eem_write(EEMINTSTS, 0xffffffff);
+		mt_ptp_unlock(&flag);
+	}
+	enable_irq(eem_irq_number);
 
 	/* get original volt from cpu dvfs before init01*/
 	for_each_det(det) {

@@ -611,12 +611,21 @@ static void reboot_after_fn(struct work_struct *work)
 		emergency_restart();
 	}
 }
-static DECLARE_DELAYED_WORK(reboot_after_work, reboot_after_fn);
+static DEFINE_PER_CPU(struct delayed_work, reboot_after_work);
 
+/* One timer per CPU: a CPU that never returns from a firmware call cannot hold the restart back. */
 static int __init reboot_after_init(void)
 {
-	if (reboot_after > 0)
-		schedule_delayed_work(&reboot_after_work, reboot_after * HZ);
+	int cpu;
+
+	if (reboot_after <= 0)
+		return 0;
+	for_each_online_cpu(cpu) {
+		struct delayed_work *w = &per_cpu(reboot_after_work, cpu);
+
+		INIT_DELAYED_WORK(w, reboot_after_fn);
+		schedule_delayed_work_on(cpu, w, reboot_after * HZ);
+	}
 	return 0;
 }
 core_initcall(reboot_after_init);

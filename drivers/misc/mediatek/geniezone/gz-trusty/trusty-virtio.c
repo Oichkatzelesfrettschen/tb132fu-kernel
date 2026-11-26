@@ -761,6 +761,7 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 	void *descr_va;
 	size_t descr_sz;
 	size_t descr_buf_sz;
+	bool stop = true;
 
 	/* allocate buffer to load device descriptor into */
 	descr_buf_sz = PAGE_SIZE;
@@ -817,16 +818,13 @@ static int trusty_virtio_add_devices(struct trusty_ctx *tctx)
 	/* start virtio */
 	ret = trusty_virtio_start(tctx, descr_va, descr_sz);
 	if (ret) {
-		/*
-		 * The secure side keeps the bus started when the previous
-		 * kernel was replaced without a stop (kexec); a stop returns
-		 * it to idle, after which the start is accepted.
-		 */
-		trusty_virtio_stop(tctx, descr_va, descr_sz);
-		ret = trusty_virtio_start(tctx, descr_va, descr_sz);
-	}
-	if (ret) {
 		dev_info(tctx->dev, "failed (%d) to start virtio\n", ret);
+		/*
+		 * A refused start means the secure side holds a bus this
+		 * kernel did not start (kexec); SMCF_SC_VIRTIO_STOP issued
+		 * for that bus does not return.
+		 */
+		stop = false;
 		goto err_start_virtio;
 	}
 
@@ -846,7 +844,8 @@ err_register_notifier:
 err_parse_descr:
 	_remove_devices_locked(tctx);
 	mutex_unlock(&tctx->mlock);
-	trusty_virtio_stop(tctx, descr_va, descr_sz);
+	if (stop)
+		trusty_virtio_stop(tctx, descr_va, descr_sz);
 err_load_descr:
 	free_pages_exact(descr_va, descr_buf_sz);
 	return ret;

@@ -596,8 +596,8 @@ static int __init reboot_setup(char *str)
 __setup("reboot=", reboot_setup);
 
 /*
- * reboot_after=<seconds> on the command line restarts the machine that long
- * after the initcalls unless /sys/module/reboot/parameters/reboot_after is
+ * reboot.reboot_after=<seconds> on the command line restarts the machine that
+ * long after the core initcalls unless /sys/module/reboot/parameters/reboot_after is
  * set to 0 first. A kernel started for a test (kexec) names its own time
  * limit this way, and the restart keeps the pstore console of that boot.
  */
@@ -619,4 +619,4 @@ static int __init reboot_after_init(void)
 		schedule_delayed_work(&reboot_after_work, reboot_after * HZ);
 	return 0;
 }
-late_initcall(reboot_after_init);
+core_initcall(reboot_after_init);

@@ -2398,14 +2398,17 @@ static int sctp_setsockopt_autoclose(struct sock *sk, char __user *optval,
 {
 	struct sctp_sock *sp = sctp_sk(sk);
 	struct net *net = sock_net(sk);
+	__u32 autoclose;
 
 	/* Applicable to UDP-style socket only */
 	if (sctp_style(sk, TCP))
 		return -EOPNOTSUPP;
 	if (optlen != sizeof(int))
 		return -EINVAL;
-	if (copy_from_user(&sp->autoclose, optval, optlen))
+	/* autoclose lies outside the usercopy region of the sctp_sock cache. */
+	if (copy_from_user(&autoclose, optval, sizeof(autoclose)))
 		return -EFAULT;
+	sp->autoclose = autoclose;
 
 	if (sp->autoclose > net->sctp.max_autoclose)
 		sp->autoclose = net->sctp.max_autoclose;

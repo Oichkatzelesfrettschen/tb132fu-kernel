@@ -5226,10 +5226,13 @@ int kbase_sysfs_init(struct kbase_device *kbdev)
 			&kbase_scheduling_attr_group);
 		sysfs_remove_group(&kbdev->dev->kobj,
 			&kbase_attr_group);
+		return err;
 	}
 
-    kbdev->proc_sysfs_node = kobject_create_and_add("kprcs",
+	kbdev->proc_sysfs_node = kobject_create_and_add("kprcs",
 			&kbdev->dev->kobj);
+	if (!kbdev->proc_sysfs_node)
+		dev_warn(kbdev->dev, "kprcs sysfs directory not created\n");
 
 	return err;
 }

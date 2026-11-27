@@ -147,10 +147,13 @@ static int kbase_insert_kctx_to_process(struct kbase_context *kctx)
 		kprcs->dma_buf_root = RB_ROOT;
 		kprcs->total_gpu_pages = 0;
 		kprcs->dma_buf_pages = 0;
-		WARN_ON(kobject_init_and_add(
-					&kprcs->kobj, &kprcs_ktype,
-					kctx->kbdev->proc_sysfs_node,
-					"%d", tgid));
+		kobject_init(&kprcs->kobj, &kprcs_ktype);
+		/* A process without a sysfs node is still accounted. */
+		if (kctx->kbdev->proc_sysfs_node &&
+		    kobject_add(&kprcs->kobj, kctx->kbdev->proc_sysfs_node,
+				"%d", tgid))
+			dev_warn(kctx->kbdev->dev,
+				 "kprcs sysfs node for %d not added\n", tgid);
 
 		while (*new) {
 			struct kbase_process *prcs_node;
@@ -341,7 +344,8 @@ static void kbase_remove_kctx_from_process(struct kbase_context *kctx)
 		 */
 		WARN_ON(kprcs->total_gpu_pages);
 		WARN_ON(!RB_EMPTY_ROOT(&kprcs->dma_buf_root));
-		kobject_del(&kprcs->kobj);
+		if (kprcs->kobj.state_in_sysfs)
+			kobject_del(&kprcs->kobj);
 		/* The release callback frees kprcs once the last sysfs reader is done. */
 		kobject_put(&kprcs->kobj);
 	}

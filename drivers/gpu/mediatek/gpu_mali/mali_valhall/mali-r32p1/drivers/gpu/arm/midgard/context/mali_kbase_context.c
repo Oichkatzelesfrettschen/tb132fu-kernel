@@ -43,7 +43,7 @@
 
 static void kbase_kprcs_release(struct kobject *kobj)
 {
-	// Nothing to release
+	kfree(to_kprcs(kobj));
 }
 
 static ssize_t total_gpu_mem_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
@@ -73,12 +73,10 @@ static struct attribute *kprcs_attrs[] = {
 	&dma_buf_gpu_mem_attr.attr,
 	NULL
 };
-ATTRIBUTE_GROUPS(kprcs);
-
 static struct kobj_type kprcs_ktype = {
 	.release = kbase_kprcs_release,
 	.sysfs_ops = &kobj_sysfs_ops,
-	.default_groups = kprcs_groups,
+	.default_attrs = kprcs_attrs,
 };
 
 /**
@@ -344,8 +342,8 @@ static void kbase_remove_kctx_from_process(struct kbase_context *kctx)
 		WARN_ON(kprcs->total_gpu_pages);
 		WARN_ON(!RB_EMPTY_ROOT(&kprcs->dma_buf_root));
 		kobject_del(&kprcs->kobj);
+		/* The release callback frees kprcs once the last sysfs reader is done. */
 		kobject_put(&kprcs->kobj);
-		kfree(kprcs);
 	}
 }
 

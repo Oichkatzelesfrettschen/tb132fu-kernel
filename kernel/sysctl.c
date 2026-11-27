@@ -59,6 +59,7 @@
 #include <linux/pipe_fs_i.h>
 #include <linux/oom.h>
 #include <linux/kmod.h>
+#include <linux/usb.h>
 #include <linux/capability.h>
 #include <linux/binfmts.h>
 #include <linux/sched/sysctl.h>
@@ -926,6 +927,17 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= devkmsg_sysctl_set_loglvl,
 	},
+#if IS_ENABLED(CONFIG_USB)
+	{
+		.procname	= "deny_new_usb",
+		.data		= &deny_new_usb,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax_sysadmin,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+#endif
 	{
 		.procname	= "dmesg_restrict",
 		.data		= &dmesg_restrict,

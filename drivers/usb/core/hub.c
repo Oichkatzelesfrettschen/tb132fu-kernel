@@ -62,6 +62,9 @@
  * change to USB_STATE_NOTATTACHED even when the semaphore isn't held. */
 static DEFINE_SPINLOCK(device_state_lock);
 
+/* kernel.deny_new_usb: a device connected while this is set is not enumerated. */
+int deny_new_usb __read_mostly;
+
 /* workqueue to process hub events */
 static struct workqueue_struct *hub_wq;
 static void hub_event(struct work_struct *work);
@@ -5115,6 +5118,13 @@ static void hub_port_connect(struct usb_hub *hub, int port1, u16 portstatus,
 			goto done;
 		return;
 	}
+
+	if (deny_new_usb) {
+		dev_err(&port_dev->dev,
+			"denied insert of USB device on port %d\n", port1);
+		goto done;
+	}
+
 	if (hub_is_superspeed(hub->hdev))
 		unit_load = 150;
 	else

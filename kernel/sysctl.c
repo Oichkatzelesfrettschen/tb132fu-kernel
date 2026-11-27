@@ -927,7 +927,7 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= devkmsg_sysctl_set_loglvl,
 	},
-#if IS_ENABLED(CONFIG_USB)
+#if IS_BUILTIN(CONFIG_USB)
 	{
 		.procname	= "deny_new_usb",
 		.data		= &deny_new_usb,

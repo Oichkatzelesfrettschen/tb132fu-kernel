@@ -28,6 +28,7 @@
 #include <linux/string.h>
 #include <linux/cdev.h>
 #include <linux/mtk_drm_doze.h>
+#include <linux/power_supply.h>
 #include "goodix_ts_core.h"
 
 #define GOODIX_DEFAULT_CFG_NAME		"goodix_cfg_group.cfg"
@@ -809,6 +810,215 @@ static ssize_t goodix_ts_debug_log_store(struct device *dev,
 	return count;
 }
 
+
+/*
+ * Chip mode commands. brl_reset() returns the chip to its defaults, so
+ * goodix_ts_resume() sends the cached state again through
+ * goodix_ts_restore_modes(). Each sender holds mode_lock and skips the
+ * transfer while the chip is suspended; suspend and resume change the
+ * suspended flag under the same lock.
+ */
+/*
+ * The edge-grip and charger command codes are boot parameters
+ * (goodix_core.grip_cmd, .charger_on_cmd, .charger_off_cmd); a zero code
+ * leaves that notice unsent.
+ */
+static unsigned int grip_cmd;
+module_param(grip_cmd, uint, 0444);
+static unsigned int charger_on_cmd;
+module_param(charger_on_cmd, uint, 0444);
+static unsigned int charger_off_cmd;
+module_param(charger_off_cmd, uint, 0444);
+
+static int goodix_ts_send_mode_cmd(struct goodix_ts_core *cd, u8 code,
+				   u8 len, u8 data0)
+{
+	struct goodix_ts_cmd cmd = { 0 };
+
+	cmd.len = len;
+	cmd.cmd = code;
+	cmd.data[0] = data0;
+	return cd->hw_ops->send_cmd(cd, &cmd);
+}
+
+static void goodix_ts_apply_write_mode(struct goodix_ts_core *cd)
+{
+	int ret;
+
+	ret = goodix_ts_send_mode_cmd(cd, 0x17, 4, 0);
+	if (ret < 0)
+		ts_err("exit game mode failed, write_mode=%d", cd->write_mode);
+	ret = goodix_ts_send_mode_cmd(cd, 0xBA, 8, 0x01);
+	if (ret < 0)
+		ts_err("exit pen mode failed, write_mode=%d", cd->write_mode);
+
+	if (cd->write_mode == GOODIX_WRITE_MODE_GAME)
+		ret = goodix_ts_send_mode_cmd(cd, 0x16, 4, 0);
+	else if (cd->write_mode == GOODIX_WRITE_MODE_PEN)
+		ret = goodix_ts_send_mode_cmd(cd, 0xBA, 8, 0x02);
+	if (ret < 0)
+		ts_err("enter write_mode %d failed", cd->write_mode);
+	else
+		ts_info("write_mode %d", cd->write_mode);
+}
+
+static void goodix_ts_apply_grip_mode(struct goodix_ts_core *cd)
+{
+	if (!cd->grip_mode || !grip_cmd)
+		return;
+	if (goodix_ts_send_mode_cmd(cd, grip_cmd, 5, cd->grip_mode) < 0)
+		ts_err("send edge grip cmd failed");
+	else
+		ts_info("edge grip %s", cd->grip_mode ==
+			GOODIX_GRIP_MODE_PORTRAIT ? "portrait" : "landscape");
+}
+
+static void goodix_ts_apply_charger_mode(struct goodix_ts_core *cd)
+{
+	unsigned int code = cd->charger_online ? charger_on_cmd :
+						 charger_off_cmd;
+
+	if (cd->charger_online < 0 || !code ||
+	    cd->bus->ic_type != IC_TYPE_BERLIN_B)
+		return;
+	if (goodix_ts_send_mode_cmd(cd, code, 4, 0) < 0)
+		ts_err("send charger cmd failed");
+	else
+		ts_info("charger mode %d", cd->charger_online);
+}
+
+/* caller holds mode_lock */
+static void goodix_ts_restore_modes(struct goodix_ts_core *cd)
+{
+	goodix_ts_apply_grip_mode(cd);
+	goodix_ts_apply_charger_mode(cd);
+	goodix_ts_apply_write_mode(cd);
+}
+
+static void goodix_ts_charger_work(struct work_struct *work)
+{
+	struct goodix_ts_core *cd = container_of(work, struct goodix_ts_core,
+						 charger_work);
+	struct power_supply *psy = power_supply_get_by_name("charger");
+	union power_supply_propval val = { 0 };
+	int ret;
+
+	if (!psy)
+		return;
+	ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE, &val);
+	power_supply_put(psy);
+	if (ret < 0)
+		return;
+
+	mutex_lock(&cd->mode_lock);
+	if (cd->charger_online != !!val.intval) {
+		cd->charger_online = !!val.intval;
+		if (!atomic_read(&cd->suspended))
+			goodix_ts_apply_charger_mode(cd);
+	}
+	mutex_unlock(&cd->mode_lock);
+}
+
+/* power_supply_notifier is an atomic chain: defer the chip transfer */
+static int goodix_ts_charger_notifier_callback(struct notifier_block *nb,
+					       unsigned long event, void *data)
+{
+	struct goodix_ts_core *cd = container_of(nb, struct goodix_ts_core,
+						 charger_notifier);
+	struct power_supply *psy = data;
+
+	if (event == PSY_EVENT_PROP_CHANGED && psy && psy->desc &&
+	    !strcmp(psy->desc->name, "charger"))
+		schedule_work(&cd->charger_work);
+	return NOTIFY_OK;
+}
+
+static ssize_t writemode_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct goodix_ts_core *cd = dev_get_drvdata(dev);
+	u8 mode;
+
+	mutex_lock(&cd->mode_lock);
+	mode = cd->write_mode;
+	mutex_unlock(&cd->mode_lock);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", mode);
+}
+
+static ssize_t writemode_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct goodix_ts_core *cd = dev_get_drvdata(dev);
+	u8 mode;
+	int ret;
+
+	ret = kstrtou8(buf, 16, &mode);
+	if (ret)
+		return ret;
+	if (mode > GOODIX_WRITE_MODE_GAME)
+		return -EINVAL;
+
+	mutex_lock(&cd->mode_lock);
+	cd->write_mode = mode;
+	if (cd->init_stage >= CORE_INIT_STAGE2 &&
+	    !atomic_read(&cd->suspended))
+		goodix_ts_apply_write_mode(cd);
+	mutex_unlock(&cd->mode_lock);
+	return count;
+}
+static DEVICE_ATTR(writemode, 0664, writemode_show, writemode_store);
+
+/* edge_grip takes the display rotation as one digit, 0 to 3 quarter turns */
+static ssize_t edge_grip_write(struct file *file, const char __user *buffer,
+			       size_t count, loff_t *pos)
+{
+	struct goodix_ts_core *cd = PDE_DATA(file_inode(file));
+	char text[4] = { 0 };
+	u8 angle;
+	int ret;
+
+	if (!count || count >= sizeof(text))
+		return -EINVAL;
+	if (copy_from_user(text, buffer, count))
+		return -EFAULT;
+	ret = kstrtou8(text, 10, &angle);
+	if (ret)
+		return ret;
+	if (angle > 3)
+		return -EINVAL;
+
+	mutex_lock(&cd->mode_lock);
+	cd->grip_angle = angle;
+	cd->grip_mode = (cd->grip_angle & 1) ? GOODIX_GRIP_MODE_LANDSCAPE :
+					       GOODIX_GRIP_MODE_PORTRAIT;
+	if (cd->init_stage >= CORE_INIT_STAGE2 &&
+	    !atomic_read(&cd->suspended))
+		goodix_ts_apply_grip_mode(cd);
+	mutex_unlock(&cd->mode_lock);
+	return count;
+}
+
+static ssize_t edge_grip_read(struct file *file, char __user *buf,
+			      size_t count, loff_t *pos)
+{
+	struct goodix_ts_core *cd = PDE_DATA(file_inode(file));
+	char out[4];
+	int len;
+
+	mutex_lock(&cd->mode_lock);
+	len = scnprintf(out, sizeof(out), "%d\n", cd->grip_angle);
+	mutex_unlock(&cd->mode_lock);
+	return simple_read_from_buffer(buf, count, pos, out, len);
+}
+
+static const struct file_operations edge_grip_ops = {
+	.write = edge_grip_write,
+	.read = edge_grip_read,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+};
+
 #if IS_ENABLED(CONFIG_CHARGER_CTN730)
 static ssize_t goodix_ts_support_pen_show(struct device *dev,
 					 struct device_attribute *attr, char *buf)
@@ -871,6 +1081,7 @@ static struct attribute *sysfs_attrs[] = {
 	&dev_attr_irq_info.attr,
 	&dev_attr_esd_info.attr,
 	&dev_attr_debug_log.attr,
+	&dev_attr_writemode.attr,
 #if IS_ENABLED(CONFIG_CHARGER_CTN730)
 	&dev_attr_support_pen.attr,
 #endif
@@ -956,50 +1167,37 @@ static int rawdata_proc_open(struct inode *inode, struct file *file)
 #if P537_PALM_EN
 static ssize_t tp_palm_write(struct file *file, const char *buffer, size_t count, loff_t *pos)
 {
-	char dbg[10] = { 0 };
-	uint8_t state;
-	uint8_t ret;
+	/* palm states map onto the write modes: 1 pen, 3 game, 2 and 4 normal */
+	static const u8 mode_of_state[] = {
+		[1] = GOODIX_WRITE_MODE_PEN,
+		[2] = GOODIX_WRITE_MODE_NORMAL,
+		[3] = GOODIX_WRITE_MODE_GAME,
+		[4] = GOODIX_WRITE_MODE_NORMAL,
+	};
 	struct goodix_ts_core *cd = PDE_DATA(file_inode(file));
-	struct goodix_ts_hw_ops *hw_ops = cd->hw_ops;
-	struct goodix_ts_cmd palm_enhance_cmd;
-	struct goodix_ts_cmd palm_enhance_exit_cmd;
-	struct goodix_ts_cmd palm_decline_cmd;
-	struct goodix_ts_cmd palm_decline_exit_cmd;
+	char dbg[2] = { 0 };
+	u8 state;
+	int ret;
 
-	palm_enhance_cmd.len = 8;
-	palm_enhance_cmd.cmd = 0xBA;
-	palm_enhance_cmd.data[0] = 0x02;
-	palm_enhance_exit_cmd.len = 8;
-	palm_enhance_exit_cmd.cmd = 0xBA;
-	palm_enhance_exit_cmd.data[0] = 0x01;
-
-	palm_decline_cmd.len = 4;
-	palm_decline_cmd.cmd = 0x16;
-	palm_decline_exit_cmd.len = 4;
-	palm_decline_exit_cmd.cmd = 0x17;
-
-	ret = copy_from_user(dbg, (uint8_t *) buffer, sizeof(uint8_t));
-	if (ret)
+	if (!count)
 		return -EINVAL;
-
+	if (copy_from_user(dbg, buffer, 1))
+		return -EFAULT;
 	ret = kstrtou8(dbg, 16, &state);
 	if (ret < 0)
 		return ret;
-
-	cd->palm_state = state;
-	ts_info("tp palm set %d!\n", state);
-
-	if(cd->palm_state == 1){
-		hw_ops->send_cmd(cd, &palm_enhance_cmd);
-	} else if(cd->palm_state == 2){
-		hw_ops->send_cmd(cd, &palm_enhance_exit_cmd);
-	} else if(cd->palm_state == 3){
-		hw_ops->send_cmd(cd, &palm_decline_cmd);
-	}else if(cd->palm_state == 4){
-		hw_ops->send_cmd(cd, &palm_decline_exit_cmd);
-	}else{
-		ts_err("Not support state!\n");
+	if (state < 1 || state >= ARRAY_SIZE(mode_of_state)) {
+		ts_err("Not support state!");
+		return -EINVAL;
 	}
+
+	mutex_lock(&cd->mode_lock);
+	cd->palm_state = state;
+	cd->write_mode = mode_of_state[state];
+	if (cd->init_stage >= CORE_INIT_STAGE2 &&
+	    !atomic_read(&cd->suspended))
+		goodix_ts_apply_write_mode(cd);
+	mutex_unlock(&cd->mode_lock);
 	return count;
 }
 
@@ -1023,7 +1221,9 @@ static ssize_t tp_palm_read(struct file *file, char __user *buf,
 	if (ret < 0)
 		return ret;*/
 
+	mutex_lock(&cd->mode_lock);
 	state = cd->palm_state;
+	mutex_unlock(&cd->mode_lock);
 	ts_info("palm_state is %d", state);
 	snprintf(temp_buf, 100, "%d\n",state);
 	return simple_read_from_buffer(buf, count, pos, temp_buf, strlen(temp_buf));
@@ -1073,6 +1273,11 @@ static void goodix_ts_procfs_init(struct goodix_ts_core *core_data)
 	if (!proc_entry)
 		ts_err("failed to create proc entry");
 
+	proc_entry = proc_create_data("goodix_ts/edge_grip", 0664, NULL,
+			&edge_grip_ops, core_data);
+	if (!proc_entry)
+		ts_err("failed to create proc edge_grip");
+
 	proc_entry = proc_create_data("tp_info", 0440, NULL,
 			&goodix_fw_version_info_ops, core_data);
 	if (!proc_entry)
@@ -1089,6 +1294,7 @@ static void goodix_ts_procfs_init(struct goodix_ts_core *core_data)
 static void goodix_ts_procfs_exit(struct goodix_ts_core *core_data)
 {
 	remove_proc_entry("goodix_ts/tp_capacitance_data", NULL);
+	remove_proc_entry("goodix_ts/edge_grip", NULL);
 #if P537_PALM_EN
 	remove_proc_entry("goodix_ts/tp_palm",NULL);
 #endif
@@ -2010,7 +2216,10 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 		return 0;
 
 	ts_info("Suspend start");
+	/* a mode command in flight finishes before the chip goes down */
+	mutex_lock(&core_data->mode_lock);
 	atomic_set(&core_data->suspended, 1);
+	mutex_unlock(&core_data->mode_lock);
 	/* disable irq */
 	hw_ops->irq_enable(core_data, false);
 
@@ -2085,6 +2294,8 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 		return 0;
 
 	ts_info("Resume start");
+	/* held until the cached modes are sent, so writers wait for the reset */
+	mutex_lock(&core_data->mode_lock);
 	atomic_set(&core_data->suspended, 0);
 	hw_ops->irq_enable(core_data, false);
 
@@ -2137,6 +2348,8 @@ out:
 	else
 		goodix_ts_pen_on(core_data);
 #endif
+	goodix_ts_restore_modes(core_data);
+	mutex_unlock(&core_data->mode_lock);
 	/* enable irq */
 	hw_ops->irq_enable(core_data, true);
 	/* open esd */
@@ -2397,6 +2610,15 @@ int goodix_ts_stage2_init(struct goodix_ts_core *cd)
 		ts_info("Unable to register Goodix CTN730 notifier: %d", ret);
 #endif
 
+	cd->charger_notifier.notifier_call =
+		goodix_ts_charger_notifier_callback;
+	ret = power_supply_reg_notifier(&cd->charger_notifier);
+	if (ret)
+		ts_info("Unable to register charger notifier: %d", ret);
+	else
+		cd->charger_registered = true;
+	schedule_work(&cd->charger_work);
+
 	return 0;
 exit:
 	goodix_ts_pen_dev_remove(cd);
@@ -2582,6 +2804,9 @@ static int goodix_ts_probe(struct platform_device *pdev)
 	core_data->pdev = pdev;
 	core_data->bus = bus_interface;
 	platform_set_drvdata(pdev, core_data);
+	mutex_init(&core_data->mode_lock);
+	INIT_WORK(&core_data->charger_work, goodix_ts_charger_work);
+	core_data->charger_online = -1;
 
 	/* get GPIO resource */
 	ret = goodix_ts_gpio_setup(core_data);
@@ -2634,6 +2859,10 @@ static int goodix_ts_remove(struct platform_device *pdev)
 
 	goodix_ts_unregister_notifier(&core_data->ts_notifier);
 	goodix_tools_exit();
+
+	if (core_data->charger_registered)
+		power_supply_unreg_notifier(&core_data->charger_notifier);
+	cancel_work_sync(&core_data->charger_work);
 
 	if (core_data->init_stage >= CORE_INIT_STAGE2) {
 	#if IS_REACHABLE(CONFIG_DRM_MEDIATEK)

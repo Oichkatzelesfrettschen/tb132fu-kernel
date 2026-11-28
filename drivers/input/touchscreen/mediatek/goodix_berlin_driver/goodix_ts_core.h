@@ -31,6 +31,11 @@
 #define GOODIX_MAX_TOUCH				10
 #define GOODIX_PEN_MAX_PRESSURE			4096
 #define GOODIX_MAX_PEN_KEY				2
+#define GOODIX_WRITE_MODE_NORMAL			0
+#define GOODIX_WRITE_MODE_PEN			1
+#define GOODIX_WRITE_MODE_GAME			2
+#define GOODIX_GRIP_MODE_PORTRAIT		1
+#define GOODIX_GRIP_MODE_LANDSCAPE		2
 #define GOODIX_PEN_MAX_TILT				90
 #define GOODIX_CFG_MAX_SIZE				4096
 #define GOODIX_FW_MAX_SIEZE				(300 * 1024)
@@ -532,6 +537,15 @@ struct goodix_ts_core {
 #if IS_ENABLED(CONFIG_CHARGER_CTN730)
 	struct notifier_block ctn730_notifier;
 #endif
+
+	/* serializes mode commands and the cached mode state below */
+	struct mutex mode_lock;
+	u8 write_mode;
+	u8 grip_angle;
+	u8 grip_mode;
+	int charger_online;
+	struct notifier_block charger_notifier;
+	struct work_struct charger_work;
 };
 
 /* external module structures */

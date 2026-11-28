@@ -39,6 +39,46 @@
 #include <mmu/mali_kbase_mmu.h>
 #include <context/mali_kbase_context_internal.h>
 
+#define to_kprcs(kobj) container_of(kobj, struct kbase_process, kobj)
+
+static void kbase_kprcs_release(struct kobject *kobj)
+{
+	kfree(to_kprcs(kobj));
+}
+
+static ssize_t total_gpu_mem_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	struct kbase_process *kprcs = to_kprcs(kobj);
+	if (WARN_ON(!kprcs))
+		return 0;
+
+	return sysfs_emit(buf, "%lu\n",
+			(unsigned long) kprcs->total_gpu_pages << PAGE_SHIFT);
+}
+static struct kobj_attribute total_gpu_mem_attr = __ATTR_RO(total_gpu_mem);
+
+static ssize_t dma_buf_gpu_mem_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	struct kbase_process *kprcs = to_kprcs(kobj);
+	if (WARN_ON(!kprcs))
+		return 0;
+
+	return sysfs_emit(buf, "%lu\n",
+			(unsigned long) kprcs->dma_buf_pages << PAGE_SHIFT);
+}
+static struct kobj_attribute dma_buf_gpu_mem_attr = __ATTR_RO(dma_buf_gpu_mem);
+
+static struct attribute *kprcs_attrs[] = {
+	&total_gpu_mem_attr.attr,
+	&dma_buf_gpu_mem_attr.attr,
+	NULL
+};
+static struct kobj_type kprcs_ktype = {
+	.release = kbase_kprcs_release,
+	.sysfs_ops = &kobj_sysfs_ops,
+	.default_attrs = kprcs_attrs,
+};
+
 /**
  * find_process_node - Used to traverse the process rb_tree to find if
  *                     process exists already in process rb_tree.
@@ -106,6 +146,14 @@ static int kbase_insert_kctx_to_process(struct kbase_context *kctx)
 		INIT_LIST_HEAD(&kprcs->kctx_list);
 		kprcs->dma_buf_root = RB_ROOT;
 		kprcs->total_gpu_pages = 0;
+		kprcs->dma_buf_pages = 0;
+		kobject_init(&kprcs->kobj, &kprcs_ktype);
+		/* A process without a sysfs node is still accounted. */
+		if (kctx->kbdev->proc_sysfs_node &&
+		    kobject_add(&kprcs->kobj, kctx->kbdev->proc_sysfs_node,
+				"%d", tgid))
+			dev_warn(kctx->kbdev->dev,
+				 "kprcs sysfs node for %d not added\n", tgid);
 
 		while (*new) {
 			struct kbase_process *prcs_node;
@@ -296,7 +344,10 @@ static void kbase_remove_kctx_from_process(struct kbase_context *kctx)
 		 */
 		WARN_ON(kprcs->total_gpu_pages);
 		WARN_ON(!RB_EMPTY_ROOT(&kprcs->dma_buf_root));
-		kfree(kprcs);
+		if (kprcs->kobj.state_in_sysfs)
+			kobject_del(&kprcs->kobj);
+		/* The release callback frees kprcs once the last sysfs reader is done. */
+		kobject_put(&kprcs->kobj);
 	}
 }
 

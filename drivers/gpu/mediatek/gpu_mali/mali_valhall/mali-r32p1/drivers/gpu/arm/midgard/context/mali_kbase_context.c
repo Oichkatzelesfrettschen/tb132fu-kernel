@@ -53,9 +53,10 @@ static ssize_t total_gpu_mem_show(struct kobject *kobj, struct kobj_attribute *a
 		return 0;
 
 	return sysfs_emit(buf, "%lu\n",
-			(unsigned long) kprcs->total_gpu_pages << PAGE_SHIFT);
+			(unsigned long) READ_ONCE(kprcs->total_gpu_pages) << PAGE_SHIFT);
 }
-static struct kobj_attribute total_gpu_mem_attr = __ATTR_RO(total_gpu_mem);
+static struct kobj_attribute total_gpu_mem_attr =
+	__ATTR(total_gpu_mem, 0440, total_gpu_mem_show, NULL);
 
 static ssize_t dma_buf_gpu_mem_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
@@ -64,9 +65,10 @@ static ssize_t dma_buf_gpu_mem_show(struct kobject *kobj, struct kobj_attribute 
 		return 0;
 
 	return sysfs_emit(buf, "%lu\n",
-			(unsigned long) kprcs->dma_buf_pages << PAGE_SHIFT);
+			(unsigned long) READ_ONCE(kprcs->dma_buf_pages) << PAGE_SHIFT);
 }
-static struct kobj_attribute dma_buf_gpu_mem_attr = __ATTR_RO(dma_buf_gpu_mem);
+static struct kobj_attribute dma_buf_gpu_mem_attr =
+	__ATTR(dma_buf_gpu_mem, 0440, dma_buf_gpu_mem_show, NULL);
 
 static struct attribute *kprcs_attrs[] = {
 	&total_gpu_mem_attr.attr,

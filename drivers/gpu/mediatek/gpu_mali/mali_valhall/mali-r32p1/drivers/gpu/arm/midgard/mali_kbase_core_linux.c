@@ -5113,9 +5113,9 @@ static ssize_t total_gpu_mem_show(
 		return -ENODEV;
 
 	return sysfs_emit(buf, "%lu\n",
-		(unsigned long) kbdev->total_gpu_pages << PAGE_SHIFT);
+		(unsigned long) READ_ONCE(kbdev->total_gpu_pages) << PAGE_SHIFT);
 }
-static DEVICE_ATTR_RO(total_gpu_mem);
+static DEVICE_ATTR(total_gpu_mem, 0440, total_gpu_mem_show, NULL);
 
 static ssize_t dma_buf_gpu_mem_show(
 	struct device *dev,
@@ -5128,9 +5128,9 @@ static ssize_t dma_buf_gpu_mem_show(
 		return -ENODEV;
 
 	return sysfs_emit(buf, "%lu\n",
-		(unsigned long) kbdev->dma_buf_pages << PAGE_SHIFT);
+		(unsigned long) READ_ONCE(kbdev->dma_buf_pages) << PAGE_SHIFT);
 }
-static DEVICE_ATTR_RO(dma_buf_gpu_mem);
+static DEVICE_ATTR(dma_buf_gpu_mem, 0440, dma_buf_gpu_mem_show, NULL);
 
 static struct attribute *kbase_attrs[] = {
 #ifdef CONFIG_MALI_DEBUG

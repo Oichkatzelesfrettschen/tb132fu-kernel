@@ -1221,7 +1221,9 @@ static ssize_t tp_palm_read(struct file *file, char __user *buf,
 	if (ret < 0)
 		return ret;*/
 
+	mutex_lock(&cd->mode_lock);
 	state = cd->palm_state;
+	mutex_unlock(&cd->mode_lock);
 	ts_info("palm_state is %d", state);
 	snprintf(temp_buf, 100, "%d\n",state);
 	return simple_read_from_buffer(buf, count, pos, temp_buf, strlen(temp_buf));

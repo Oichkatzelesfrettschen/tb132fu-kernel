@@ -545,6 +545,7 @@ struct goodix_ts_core {
 	u8 grip_mode;
 	int charger_online;
 	struct notifier_block charger_notifier;
+	bool charger_registered;
 	struct work_struct charger_work;
 };
 
